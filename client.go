@@ -317,13 +317,17 @@ func (c *redisQueueClient) _peek (ctx context.Context, room string, offset int, 
 }
 
 
-func (c *redisQueueClient) _ack (ctx context.Context, room string) (error) {
-	err := c.callAckClientMessage(ctx, c.redis,
+func (c *redisQueueClient) _ack (ctx context.Context, ackToken string) (error) {
+	parts := strings.SplitN(ackToken, "::", 2)
+
+	if (len(parts) < 2) { return fmt.Errorf("Invalid ackToken %v", ackToken) }
+
+	room := parts[1]
+
+	return c.callAckClientMessage(ctx, c.redis,
 		[]interface{} { room, c.clientId, currentTimestamp() },
 		[]string { c.keyRoomSetOfKnownClients(room), c.keyRoomSetOfAckedClients(room), c.keyGlobalKnownRooms, c.keyRoomQueue(room), c.keyRoomPubsub(room) },
 	).Err()
-
-	return err
 }
 
 func (c *redisQueueClient) _handleTimeoutMessage (ctx context.Context, _channel string, message string) {
@@ -495,7 +499,9 @@ func (c *redisQueueClient) _handleMessage (ctx context.Context, room string, msg
 			ackToken := fmt.Sprintf("%s::%s", packet.Producer, room)
 
 			msg.Ack = func (ctx context.Context) (error) {
-				return c._ack(ctx, ackToken)
+				err := c._ack(ctx, ackToken)
+
+				return err
 			}
 		}
 

@@ -192,7 +192,7 @@ var scriptAckClientMessage = `
   local clientExistsInRoom = tonumber(redis.call("ZRANK", keyRoomSetOfKnownClients, roomClientID));
 
   if (clientExistsInRoom == nil) then
-    return "ERR_NO_CLIENT_ID_IN_ROOM";
+    return "ERR_NO_CLIENT_ID_IN_ROOM " .. roomClientID;
   else
     redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
   end

@@ -111,3 +111,51 @@ func TestGetMetrics (t *testing.T) {
 	client.Close()
 }
 
+func TestUnsubscribe (t *testing.T) {
+	var exactReceivedMsgCount = int64(1)
+	var receivedMsgCount int64
+
+	options := createQueueOptions(
+		"TestUnsubscribe",
+	)
+
+	client, err := createQueueClient(options)
+
+	if (err != nil) { t.Error(err); return }
+
+	err = client.Subscribe(context.TODO(), testRoomId, func (ctx context.Context, msg *redisSyncFanoutQueue.Message) (error) {
+		if (msg.Data == nil) {
+			t.Error("Received nil data");
+			return nil
+		}
+
+		strData := (*msg.Data).(string)
+		if (strData != testMessageContent) {
+			t.Errorf("Expected '%v' but received '%v'", testMessageContent, strData)
+			return nil
+		}
+
+		atomic.AddInt64(&receivedMsgCount, 1)
+
+		msg.Ack(ctx)
+
+		return nil
+	})
+
+	if (err != nil) { t.Error(err); return }
+
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1);
+	time.Sleep(time.Second * 1)
+	client.Unsubscribe(context.TODO(), testRoomId)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1); // Should not receive this message
+
+	for i := 0; i < 3 && receivedMsgCount < exactReceivedMsgCount + 1; i++ {
+		time.Sleep(time.Second * 1)
+	}
+
+	client.Close()
+
+	if (receivedMsgCount != exactReceivedMsgCount) {
+		t.Errorf("Expected %v receivedMsgCount but received %v", exactReceivedMsgCount, receivedMsgCount)
+	}
+}
