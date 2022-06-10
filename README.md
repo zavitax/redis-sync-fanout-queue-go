@@ -91,6 +91,10 @@ func Main () {
 		time.Sleep(time.Second * 1)
 	}
 
+	err = client.Unsubscribe(context.TODO(), testRoomId)
+
+	if (err != nil) { return }
+
 	client.Close()
 }
 ```
