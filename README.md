@@ -80,6 +80,8 @@ func Main () {
 	err = client.Subscribe(context.TODO(), testRoomId, func (ctx context.Context, msg *redisSyncFanoutQueue.Message) (error) {
 		fmt.Printf("Received: %v", msg.Data)
 
+		msg.Ack(ctx)
+
 		return nil
 	})
 
