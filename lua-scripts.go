@@ -37,6 +37,8 @@ var scriptUpdateClientTimestamp = `
     redis.call("ZADD", keyGlobalSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
     redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
   end
+
+  return 1;
 `;
 
 var scriptAddSyncClientToRoom = `
@@ -57,6 +59,8 @@ var scriptAddSyncClientToRoom = `
     redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
     
     redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
+
+    return 1;
   else
     return "ERR_CLIENT_ID_EXISTS_IN_ROOM";
   end
@@ -79,6 +83,8 @@ var scriptRemoveSyncClientFromRoom = `
   redis.call("ZREM", keyGlobalSetOfKnownClients, roomClientID);
 
   redis.call("PUBLISH", keyPubsubAdminEventsRemoveClientTopic, roomClientID);
+
+  return 1;
 `;
 
 /*
@@ -151,6 +157,8 @@ var scriptConditionalProcessRoomMessages = `
   else
     redis.call("ZREM", keyGlobalKnownRooms, argRoomID);
   end
+
+  return 1;
 `;
 
 var scriptEnqueueRoomMessage = `
@@ -164,6 +172,8 @@ var scriptEnqueueRoomMessage = `
 
   redis.call("ZADD", keyRoomQueue, argPriority, argMsg);
   redis.call("ZINCRBY", keyGlobalKnownRooms, 1, argRoomID);
+
+  return 1;
 `;
 
 var scriptAckClientMessage = `
@@ -186,6 +196,8 @@ var scriptAckClientMessage = `
   else
     redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
   end
+
+  return 1;
 `;
 
 var scriptGetMetrics = `

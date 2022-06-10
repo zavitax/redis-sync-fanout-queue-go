@@ -21,6 +21,7 @@ type RedisQueueClient interface {
 	Subscribe (ctx context.Context, room string, msgHandlerFunc HandleMessageFunc) (error)
 	Unsubscribe (ctx context.Context, room string) (error)
 	Close () (error)
+	Pong (ctx context.Context) (error)
 	GetMetrics (ctx context.Context, options *GetMetricsOptions) (*Metrics, error)
 	Send (ctx context.Context, room string, data interface{}, priority int) (error)
 	SendOutOfBand (ctx context.Context, room string, data interface{}) (error)
@@ -36,7 +37,7 @@ type redisQueueWireMessage struct {
 type AckMessageFunc func (ctx context.Context) (error);
 
 type Message struct {
-	Data interface{}
+	Data *interface{}
 	Ack AckMessageFunc
 	MessageContext struct {
 		Timestamp	time.Time
@@ -62,6 +63,9 @@ type redisQueueClient struct {
 	redis_subscriber_timeout_handle* redis.PubSub
 	redis_subscriber_timeout_context context.Context
 
+	housekeep_context context.Context
+	housekeep_cancelFunc context.CancelFunc 
+
 	clientId string
 	lastMessageSequenceNumber int64
 	
@@ -75,7 +79,7 @@ type redisQueueClient struct {
 	callAckClientMessage redisScriptCall;
 	callGetMetrics redisScriptCall;
 	
-	rooms map[string]roomData;
+	rooms map[string]*roomData;
 
   keyClientIDSequence string;
   keyLastTimestamp string;
@@ -117,6 +121,7 @@ func NewClient (ctx context.Context, options* Options) (RedisQueueClient, error)
 
 	c.options = options
 	c.redis = redis.NewClient(c.options.RedisOptions)
+	c.rooms = make(map[string]*roomData)
 
 	var err error
 	if c.callCreateClientID, err = newScriptCall(ctx, c.redis, scriptCreateClientID); err != nil { c.redis.Close(); return nil, err }
@@ -156,6 +161,23 @@ func NewClient (ctx context.Context, options* Options) (RedisQueueClient, error)
 		}
 	})()
 
+	c.housekeep_context, c.housekeep_cancelFunc = context.WithCancel(ctx)
+	go (func () {
+		housekeepingInterval := time.Duration(c.options.ClientTimeout / 2)
+
+		ticker := time.NewTicker(housekeepingInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-c.housekeep_context.Done():
+				break
+			case <-ticker.C:
+				c._housekeep(c.housekeep_context)
+			}
+		}
+	})()
+
 	return c, nil
 }
 
@@ -163,8 +185,8 @@ func (c *redisQueueClient) Subscribe (ctx context.Context, room string, handleMe
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := c._removeTimedOutClients(ctx); err != nil { return err }
-	if err := c._conditionalProcessRoomMessages(ctx, room); err != nil { return err }
+	c._removeTimedOutClients(ctx);
+	c._conditionalProcessRoomMessages(ctx, room);
 
 	if err := c._subscribe(ctx, room, handleMessage); err != nil { return err }
 
@@ -177,10 +199,10 @@ func (c *redisQueueClient) _subscribe (ctx context.Context, room string, handleM
 	redisHandle := c.redis_subscriber_message.Subscribe(contextWithCancel, c.keyRoomPubsub(room))
 
 	if (c.options.Sync) {
-		_, err := c.callAddSyncClientToRoom(contextWithCancel, c.redis,
+		err := c.callAddSyncClientToRoom(contextWithCancel, c.redis,
 			[]interface{} { c.clientId, room, currentTimestamp() },
 			[]string { c.keyGlobalSetOfKnownClients, c.keyRoomSetOfKnownClients(room), c.keyRoomSetOfAckedClients(room) },
-		).Result();
+		).Err();
 
 		if (err != nil) {
 			redisHandle.Close()
@@ -191,7 +213,7 @@ func (c *redisQueueClient) _subscribe (ctx context.Context, room string, handleM
 		c._pong(contextWithCancel) // Don't care for result
 	}
 
-	c.rooms[room] = roomData{
+	c.rooms[room] = &roomData{
 		handleMessage: handleMessage,
 		redisHandle: redisHandle,
 	}
@@ -211,7 +233,7 @@ func (c *redisQueueClient) Unsubscribe (ctx context.Context, room string) (error
 	defer c.mu.Unlock()
 
 	if err := c._unsubscribe(ctx, room); err != nil { return err }
-	if err := c._removeTimedOutClients(ctx); err != nil { return err }
+	c._removeTimedOutClients(ctx);
 	if err := c._conditionalProcessRoomMessages(ctx, room); err != nil { return err }
 
 	return nil
@@ -221,20 +243,22 @@ func (c *redisQueueClient) Close () (error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.housekeep_cancelFunc()
+
 	c.redis_subscriber_timeout_handle.Close()
 
 	for key, _ := range c.rooms {
 		c._unsubscribe(context.Background(), key)
 	}
 
-	c.rooms = map[string]roomData{}
+	c.rooms = make(map[string]*roomData)
 
 	return c.redis.Close()
 }
 
 func (c *redisQueueClient) Send (ctx context.Context, room string, data interface{}, priority int) (error) {
-	if err := c._pong(ctx); err != nil { return err }
-	if err := c._removeTimedOutClients(ctx); err != nil { return err }
+	c._pong(ctx);
+	c._removeTimedOutClients(ctx);
 	if err := c._send(ctx, room, data, priority); err != nil { return err }
 	if err := c._conditionalProcessRoomMessages(ctx, room); err != nil { return err }
 
@@ -242,9 +266,25 @@ func (c *redisQueueClient) Send (ctx context.Context, room string, data interfac
 }
 
 func (c *redisQueueClient) SendOutOfBand (ctx context.Context, room string, data interface{}) (error) {
-	if err := c._removeTimedOutClients(ctx); err != nil { return err }
+	c._removeTimedOutClients(ctx);
 	if err := c._sendOutOfBand(ctx, room, data); err != nil { return err }
 	if err := c._conditionalProcessRoomMessages(ctx, room); err != nil { return err }
+
+	return nil
+}
+
+func (c *redisQueueClient) Pong (ctx context.Context) (error) {
+	c._pong(ctx);
+	c._removeTimedOutClients(ctx);
+	c._conditionalProcessRoomsMessages(ctx);
+
+	return nil
+}
+
+func (c *redisQueueClient) _housekeep (ctx context.Context) (error) {
+	c._pong(ctx);
+	c._removeTimedOutClients(ctx);
+	c._conditionalProcessRoomsMessages(ctx);
 
 	return nil
 }
@@ -260,12 +300,16 @@ func (c *redisQueueClient) createClientId (ctx context.Context) (string, error) 
 	return result.(string), nil
 }
 
-func (c *redisQueueClient) _lock (ctx context.Context, tag string, timeout time.Duration) (bool, error) {
-	return c.redis.Do(ctx, "SET", c.keyGlobalLock(tag), c.clientId, "NX", "PX", timeout.Milliseconds()).Bool()
+func (c *redisQueueClient) _lock (ctx context.Context, tag string, timeout time.Duration) (error) {
+	err := c.redis.Do(ctx, "SET", c.keyGlobalLock(tag), c.clientId, "NX", "PX", timeout.Milliseconds()).Err()
+
+	return err
 }
 
-func (c *redisQueueClient) _extend_lock (ctx context.Context, tag string, timeout time.Duration) (bool, error) {
-	return c.redis.Do(ctx, "PEXPIRE", c.keyGlobalLock(tag), timeout.Milliseconds()).Bool()
+func (c *redisQueueClient) _extend_lock (ctx context.Context, tag string, timeout time.Duration) (error) {
+	err := c.redis.Do(ctx, "PEXPIRE", c.keyGlobalLock(tag), timeout.Milliseconds()).Err()
+
+	return err
 }
 
 func (c *redisQueueClient) _peek (ctx context.Context, room string, offset int, limit int) ([]string, error) {
@@ -274,10 +318,10 @@ func (c *redisQueueClient) _peek (ctx context.Context, room string, offset int, 
 
 
 func (c *redisQueueClient) _ack (ctx context.Context, room string) (error) {
-	_, err := c.callAckClientMessage(ctx, c.redis,
+	err := c.callAckClientMessage(ctx, c.redis,
 		[]interface{} { room, c.clientId, currentTimestamp() },
 		[]string { c.keyRoomSetOfKnownClients(room), c.keyRoomSetOfAckedClients(room), c.keyGlobalKnownRooms, c.keyRoomQueue(room), c.keyRoomPubsub(room) },
-	).Result()
+	).Err()
 
 	return err
 }
@@ -299,7 +343,7 @@ func (c *redisQueueClient) _handleTimeoutMessage (ctx context.Context, _channel 
 		}
 	}
 
-	c.rooms = map[string]roomData{}
+	c.rooms = make(map[string]*roomData)
 }
 
 func (c *redisQueueClient) _handleRoomMessage (ctx context.Context, channel string, message string) {
@@ -320,10 +364,10 @@ func (c *redisQueueClient) _unsubscribe (ctx context.Context, room string) (erro
 	delete(c.rooms, room)
 
 	if (c.options.Sync) {
-		_, err := c.callRemoveSyncClientFromRoom(ctx, c.redis,
+		err := c.callRemoveSyncClientFromRoom(ctx, c.redis,
 			[]interface{} { c.clientId, room, currentTimestamp() },
 			[]string { c.keyGlobalSetOfKnownClients, c.keyRoomSetOfKnownClients(room), c.keyRoomSetOfAckedClients(room), c.keyPubsubAdminEventsRemoveClientTopic },
-		).Result();
+		).Err();
 
 		return err
 	}
@@ -333,10 +377,10 @@ func (c *redisQueueClient) _unsubscribe (ctx context.Context, room string) (erro
 
 func (c *redisQueueClient) _pong (ctx context.Context) (error) {
 	for room, _ := range c.rooms {
-		_, err := c.callUpdateClientTimestamp(ctx, c.redis,
+		err := c.callUpdateClientTimestamp(ctx, c.redis,
 			[]interface{} { c.clientId, room, currentTimestamp() },
 			[]string { c.keyGlobalSetOfKnownClients, c.keyRoomSetOfKnownClients(room) },
-		).Result();
+		).Err();
 
 		if (err != nil) {
 			return err
@@ -348,12 +392,10 @@ func (c *redisQueueClient) _pong (ctx context.Context) (error) {
 
 func (c *redisQueueClient) _removeTimedOutClients (ctx context.Context) (error) {
 	lockKey := "_removeTimedOutClients";
-	lockTimeout := time.Duration(c.options.ClientTimeout.Milliseconds() / 2)
+	lockTimeout := time.Duration(c.options.ClientTimeout / 2)
 
-	if locked, err := c._lock(ctx, lockKey, lockTimeout); err != nil {
+	if err := c._lock(ctx, lockKey, lockTimeout); err != nil {
 		return err
-	} else {
-		if !locked { return nil }
 	}
 
 	argMaxTimestampToRemove := currentTimestamp() - c.options.ClientTimeout.Milliseconds()
@@ -372,16 +414,16 @@ func (c *redisQueueClient) _removeTimedOutClients (ctx context.Context) (error) 
 		clientId := parts[0]
 		room := parts[1]
 
-		_, reqErr := c.callRemoveSyncClientFromRoom(ctx, c.redis,
+		reqErr := c.callRemoveSyncClientFromRoom(ctx, c.redis,
 			[]interface{} { clientId, room, currentTimestamp() },
 			[]string { c.keyGlobalSetOfKnownClients, c.keyRoomSetOfKnownClients(room), c.keyRoomSetOfAckedClients(room), c.keyPubsubAdminEventsRemoveClientTopic },
-		).Result()
+		).Err()
 
 		if (reqErr != nil) {
 			return reqErr
 		}
 
-		_, reqErr = c._extend_lock(ctx, lockKey, lockTimeout);
+		reqErr = c._extend_lock(ctx, lockKey, lockTimeout);
 
 		if (reqErr != nil) {
 			return reqErr
@@ -393,12 +435,10 @@ func (c *redisQueueClient) _removeTimedOutClients (ctx context.Context) (error) 
 
 func (c *redisQueueClient) _conditionalProcessRoomsMessages (ctx context.Context) (error) {
 	lockKey := "_removeTimedOutClients";
-	lockTimeout := time.Duration(c.options.ClientTimeout.Milliseconds() / 2)
+	lockTimeout := time.Duration(c.options.ClientTimeout / 2)
 
-	if locked, err := c._lock(ctx, lockKey, lockTimeout); err != nil {
+	if err := c._lock(ctx, lockKey, lockTimeout); err != nil {
 		return err
-	} else {
-		if !locked { return nil }
 	}
 
 	roomIDs, reqErr := c.redis.Do(ctx, "ZRANGEBYSCORE", c.keyGlobalKnownRooms, "-inf", "+inf").StringSlice();
@@ -410,7 +450,7 @@ func (c *redisQueueClient) _conditionalProcessRoomsMessages (ctx context.Context
 			return err
 		}
 
-		if _, err := c._extend_lock(ctx, lockKey, lockTimeout); err != nil {
+		if err := c._extend_lock(ctx, lockKey, lockTimeout); err != nil {
 			return err
 		}
 	}
@@ -419,10 +459,10 @@ func (c *redisQueueClient) _conditionalProcessRoomsMessages (ctx context.Context
 }
 
 func (c *redisQueueClient) _conditionalProcessRoomMessages (ctx context.Context, room string) (error) {
-	_, err := c.callConditionalProcessRoomMessages(ctx, c.redis,
+	err := c.callConditionalProcessRoomMessages(ctx, c.redis,
 		[]interface{} { room },
 		[]string { c.keyRoomSetOfKnownClients(room), c.keyRoomSetOfAckedClients(room), c.keyGlobalKnownRooms, c.keyRoomQueue(room), c.keyRoomPubsub(room) },
-	).Result()
+	).Err()
 
 	return err
 }
@@ -445,6 +485,7 @@ func (c *redisQueueClient) _handleMessage (ctx context.Context, room string, msg
 
 		var msg Message
 
+		msg.Data = &packet.Data
 		msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
 		msg.MessageContext.Producer = packet.Producer
 		msg.MessageContext.Sequence = packet.Sequence
@@ -479,10 +520,10 @@ func (c *redisQueueClient) _send(ctx context.Context, room string, data interfac
 		return serr
 	}
 
-	_, err := c.callEnqueueRoomMessage(ctx, c.redis,
+	err := c.callEnqueueRoomMessage(ctx, c.redis,
 		[]interface{} { room, priority, jsonString },
 		[]string { c.keyRoomSetOfKnownClients(room), c.keyGlobalKnownRooms, c.keyRoomQueue(room) },
-	).Result()
+	).Err()
 
 	return err
 }
@@ -501,7 +542,7 @@ func (c *redisQueueClient) _sendOutOfBand(ctx context.Context, room string, data
 		return serr
 	}
 
-	_, err := c.redis.Do(ctx, "PUBLISH", c.keyRoomPubsub(room), jsonString).Result()
+	err := c.redis.Do(ctx, "PUBLISH", c.keyRoomPubsub(room), jsonString).Err()
 
 	return err
 }

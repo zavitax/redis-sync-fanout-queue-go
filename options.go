@@ -15,7 +15,7 @@ type Options struct {
 	ClientTimeout time.Duration
 	Sync bool
 	RedisKeyPrefix string
-	HandleMessage HandleMessageFunc
+	// HandleMessage HandleMessageFunc
 	HandleRoomEjected HandleRoomEjectedFunc
 }
 
@@ -38,9 +38,9 @@ func (o* Options) Validate() (error) {
 		return validationError
 	}
 
-	if (o.HandleMessage == nil) {
-		return validationError
-	}
+	//if (o.HandleMessage == nil) {
+	//	return validationError
+	//}
 
 	return nil;
 }
