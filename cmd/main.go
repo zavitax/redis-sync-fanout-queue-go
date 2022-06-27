@@ -88,7 +88,56 @@ func test1() {
 	client.Close()
 }
 
-func sub() {
+func sub_multi() {
+	client, _ := createQueueClient(createQueueOptions())
+
+	var receivedMsgCount int64
+
+	for i := 1; i <= 1000; i++ {
+		room := fmt.Sprintf("room-%d", i)
+
+		handler := func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
+			atomic.AddInt64(&receivedMsgCount, 1)
+
+			strData := (*msg.Data).(string)
+
+			if receivedMsgCount%10 == 0 {
+				fmt.Printf("\rSUB: %s -> %d : %s    ", room, receivedMsgCount, strData)
+			}
+
+			msg.Ack(ctx)
+
+			return nil
+		}
+
+		client.Subscribe(context.TODO(), room, handler)
+	}
+
+	fmt.Printf("Waiting...\n")
+
+	for {
+		time.Sleep(time.Second * 1)
+	}
+}
+
+func pub_multi() {
+	client, _ := createQueueClient(createQueueOptions())
+
+	for i := 1; i <= 1000; i++ {
+		room := fmt.Sprintf("room-%d", i)
+		msg := room
+
+		client.Send(context.TODO(), room, msg, 1)
+
+		if i%100 == 0 {
+			fmt.Printf("Pub: %s -> %d\n", room, i)
+		}
+	}
+
+	client.Close()
+}
+
+func sub_single() {
 	client, _ := createQueueClient(createQueueOptions())
 
 	var receivedMsgCount int64
@@ -124,10 +173,14 @@ func sub() {
 	}
 }
 
+func sub() {
+	sub_single()
+}
+
 func pub_single(id string) {
 	client, _ := createQueueClient(createQueueOptions())
 
-	for i := 0; i < 50000; i++ {
+	for i := 0; i < 5000; i++ {
 		if i%1000 == 0 {
 			fmt.Printf("Pub: %s -> %d\n", id, i)
 		}
@@ -167,6 +220,10 @@ func main() {
 		pub()
 	case "sub":
 		sub()
+	case "mpub":
+		pub_multi()
+	case "msub":
+		sub_multi()
 	default:
 		test1()
 	}
