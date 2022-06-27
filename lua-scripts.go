@@ -45,13 +45,11 @@ var scriptAddSyncClientToRoom = redisLuaScriptUtils.NewRedisScript(
 	[]string{"keyGlobalSetOfKnownClients", "keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients"},
 	[]string{"argClientID", "argRoomID", "argCurrentTimestamp"},
 	`
-    local cp = ""
     local roomClientID = argClientID .. "::" .. argRoomID;
 
     local clientExistsInRoom = tonumber(redis.call("ZRANK", keyRoomSetOfKnownClients, roomClientID));
 
     if (clientExistsInRoom == nil) then
-      cp = "ADDING_CLIENT"
       redis.call("ZADD", keyGlobalSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
       redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
       
@@ -59,10 +57,9 @@ var scriptAddSyncClientToRoom = redisLuaScriptUtils.NewRedisScript(
 
       local currRank = tonumber(redis.call("ZRANK", keyGlobalSetOfKnownClients, roomClientID))
       local currCard = tonumber(redis.call("ZCARD", keyGlobalSetOfKnownClients))
-      cp = "'ADDED_CLIENT: rank: " .. currRank .. ", card: " .. currCard .. "'";
     end
 
-    return cp
+    return 1
   `)
 
 var scriptRemoveSyncClientFromRoom = redisLuaScriptUtils.NewRedisScript(
@@ -104,15 +101,11 @@ var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
 	[]string{"keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients", "keyGlobalKnownRooms", "keyRoomQueue", "keyRoomPubsub"},
 	[]string{"argRoomID"},
 	`
-    local cp = 0
     local knownClients = tonumber(redis.call("ZCARD", keyRoomSetOfKnownClients));
-
-    cp = "'known " .. knownClients .. " (" .. keyRoomSetOfKnownClients ..")'"
 
     if (knownClients > 0) then
       local ackedClients = tonumber(redis.call("ZCARD", keyRoomSetOfAckedClients));
       
-      cp = cp .. " -> 'known " .. knownClients .. ", acked: " .. ackedClients .. "'"
       if (ackedClients > 0 and ackedClients == knownClients) then
         -- Remove next message from queue
         local msgs = redis.call("ZPOPMIN", keyRoomQueue, 1);
@@ -123,8 +116,6 @@ var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
 
           -- Publish message to PUBSUB listeners
           local res = redis.call("PUBLISH", keyRoomPubsub, msgs[1]);
-
-          cp = cp .. " -> 'PUBLISHED_TO_SYNC " .. res .. "'"
         end
       end
     else
@@ -132,8 +123,6 @@ var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
       
       -- Get all remaining messages
       local messages = redis.call("ZRANGEBYSCORE", keyRoomQueue, "-inf", "+inf");
-
-      cp = cp .. " -> 'NO_SYNC_CLIENTS msgCount: " .. #messages .. "'"
 
       for i, msg in ipairs(messages) do
         -- Publish message to PUBSUB listeners
@@ -152,7 +141,7 @@ var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
       redis.call("ZREM", keyGlobalKnownRooms, argRoomID);
     end
 
-    return cp;
+    return 1;
   `)
 
 var scriptEnqueueRoomMessage = redisLuaScriptUtils.NewRedisScript(
@@ -166,7 +155,7 @@ var scriptEnqueueRoomMessage = redisLuaScriptUtils.NewRedisScript(
 
     redis.call("ZADD", keyGlobalKnownRooms, "CH", remainingMsgCount, argRoomID);
 
-    return "ENQUEUE:" .. argRoomID;
+    return 1;
   `)
 
 var scriptAckClientMessage = redisLuaScriptUtils.NewRedisScript(

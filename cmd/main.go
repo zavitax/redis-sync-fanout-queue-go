@@ -123,14 +123,16 @@ func sub_multi() {
 func pub_multi() {
 	client, _ := createQueueClient(createQueueOptions())
 
-	for i := 1; i <= 1000; i++ {
-		room := fmt.Sprintf("room-%d", i)
-		msg := room
+	for loop := 0; loop < 50; loop++ {
+		for i := 1; i <= 1000; i++ {
+			room := fmt.Sprintf("room-%d", i)
+			msg := room
 
-		client.Send(context.TODO(), room, msg, 1)
+			client.Send(context.TODO(), room, msg, 1)
 
-		if i%100 == 0 {
-			fmt.Printf("Pub: %s -> %d\n", room, i)
+			if i%100 == 0 {
+				fmt.Printf("Pub: %s -> %d\n", room, i)
+			}
 		}
 	}
 
