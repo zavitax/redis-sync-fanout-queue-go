@@ -397,11 +397,7 @@ func (c *redisQueueClient) Send(ctx context.Context, room string, data interface
 }
 
 func (c *redisQueueClient) SendOutOfBand(ctx context.Context, room string, data interface{}) error {
-	c._removeTimedOutClients(ctx)
 	if err := c._sendOutOfBand(ctx, room, data); err != nil {
-		return err
-	}
-	if err := c._conditionalProcessRoomMessages(ctx, room); err != nil {
 		return err
 	}
 
@@ -563,7 +559,7 @@ func (c *redisQueueClient) _removeTimedOutClients(ctx context.Context) error {
 }
 
 func (c *redisQueueClient) _conditionalProcessRoomsMessages(ctx context.Context) error {
-	lockKey := "_removeTimedOutClients"
+	lockKey := "_conditionalProcessRoomsMessages"
 	lockTimeout := time.Duration(c.options.ClientTimeout / 2)
 
 	if err := c._lock(ctx, lockKey, lockTimeout); err != nil {
