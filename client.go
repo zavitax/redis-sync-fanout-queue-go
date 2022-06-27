@@ -461,6 +461,9 @@ func (c *redisQueueClient) _ack(ctx context.Context, ackToken string) error {
 }
 
 func (c *redisQueueClient) _handleTimeoutMessage(ctx context.Context, _channel string, message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	parts := strings.SplitN(message, "::", 2)
 
 	clientId := parts[0]
