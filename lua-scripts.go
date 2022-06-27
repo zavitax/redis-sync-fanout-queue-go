@@ -1,91 +1,82 @@
 package redisSyncFanoutQueue
 
-var scriptCreateClientID = `
-  local keyClientIDSequence = KEYS[1];
-  local keyLastTimestamp = KEYS[2];
+import (
+	redisLuaScriptUtils "github.com/zavitax/redis-lua-script-utils-go"
+)
 
-  local argCurrentTimestamp = tonumber(ARGV[1]);
+var scriptCreateClientID = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyClientIDSequence", "keyLastTimestamp"},
+	[]string{"argCurrentTimestamp"},
+	`
+    local lastTimestamp = tonumber(redis.call("GET", keyLastTimestamp));
+    local seq = 0;
 
-  local lastTimestamp = tonumber(redis.call("GET", keyLastTimestamp));
-  local seq = 0;
+    if (lastTimestamp == argCurrentTimestamp) then
+      seq = redis.call("INCR", keyClientIDSequence);
+    else
+      redis.call("SET", keyClientIDSequence, seq);
+      redis.call("SET", keyLastTimestamp, argCurrentTimestamp);
 
-  if (lastTimestamp == argCurrentTimestamp) then
-    seq = redis.call("INCR", keyClientIDSequence);
-  else
-    redis.call("SET", keyClientIDSequence, seq);
-    redis.call("SET", keyLastTimestamp, argCurrentTimestamp);
+      lastTimestamp = argCurrentTimestamp;
+    end
 
-    lastTimestamp = argCurrentTimestamp;
-  end
+    return lastTimestamp .. "-" .. seq;
+  `)
 
-  return lastTimestamp .. "-" .. seq;
-`;
+var scriptUpdateClientTimestamp = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyGlobalSetOfKnownClients", "keyRoomSetOfKnownClients"},
+	[]string{"argClientID", "argRoomID", "argCurrentTimestamp"},
+	`
+    local roomClientID = argClientID .. "::" .. argRoomID;
 
-var scriptUpdateClientTimestamp = `
-  local keyGlobalSetOfKnownClients = KEYS[1];
-  local keyRoomSetOfKnownClients = KEYS[2];
+    local clientExistsInGlobal = tonumber(redis.call("ZRANK", keyGlobalSetOfKnownClients, roomClientID));
 
-  local argClientID = ARGV[1];
-  local argRoomID = ARGV[2];
-  local argCurrentTimestamp = tonumber(ARGV[3]);
+    if (clientExistsInGlobal ~= nil) then
+      redis.call("ZADD", keyGlobalSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
+      redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
 
-  local roomClientID = argClientID .. "::" .. argRoomID;
+      return 1;
+    else
+      return 0;
+    end
+  `)
 
-  local clientExistsInGlobal = tonumber(redis.call("ZRANK", keyGlobalSetOfKnownClients, roomClientID));
+var scriptAddSyncClientToRoom = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyGlobalSetOfKnownClients", "keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients"},
+	[]string{"argClientID", "argRoomID", "argCurrentTimestamp"},
+	`
+    local cp = ""
+    local roomClientID = argClientID .. "::" .. argRoomID;
 
-  if (clientExistsInGlobal ~= nil) then
-    redis.call("ZADD", keyGlobalSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
-    redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
-  end
+    local clientExistsInRoom = tonumber(redis.call("ZRANK", keyRoomSetOfKnownClients, roomClientID));
 
-  return 1;
-`;
+    if (clientExistsInRoom == nil) then
+      cp = "ADDING_CLIENT"
+      redis.call("ZADD", keyGlobalSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
+      redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
+      
+      redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
 
-var scriptAddSyncClientToRoom = `
-  local keyGlobalSetOfKnownClients = KEYS[1];
-  local keyRoomSetOfKnownClients = KEYS[2];
-  local keyRoomSetOfAckedClients = KEYS[3];
+      local currRank = tonumber(redis.call("ZRANK", keyGlobalSetOfKnownClients, roomClientID))
+      local currCard = tonumber(redis.call("ZCARD", keyGlobalSetOfKnownClients))
+      cp = "'ADDED_CLIENT: rank: " .. currRank .. ", card: " .. currCard .. "'";
+    end
 
-  local argClientID = ARGV[1];
-  local argRoomID = ARGV[2];
-  local argCurrentTimestamp = tonumber(ARGV[3]);
+    return cp
+  `)
 
-  local roomClientID = argClientID .. "::" .. argRoomID;
+var scriptRemoveSyncClientFromRoom = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyGlobalSetOfKnownClients", "keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients", "keyPubsubAdminEventsRemoveClientTopic"},
+	[]string{"argClientID", "argRoomID", "argCurrentTimestamp"},
+	`
+    local roomClientID = argClientID .. "::" .. argRoomID;
 
-  local clientExistsInRoom = tonumber(redis.call("ZRANK", keyRoomSetOfKnownClients, roomClientID));
+    redis.call("ZREM", keyRoomSetOfKnownClients, roomClientID);
+    redis.call("ZREM", keyRoomSetOfAckedClients, roomClientID);
+    redis.call("ZREM", keyGlobalSetOfKnownClients, roomClientID);
 
-  if (clientExistsInRoom == nil) then
-    redis.call("ZADD", keyGlobalSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
-    redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
-    
-    redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
-
-    return 1;
-  else
-    return "ERR_CLIENT_ID_EXISTS_IN_ROOM";
-  end
-`;
-
-var scriptRemoveSyncClientFromRoom = `
-  local keyGlobalSetOfKnownClients = KEYS[1];
-  local keyRoomSetOfKnownClients = KEYS[2];
-  local keyRoomSetOfAckedClients = KEYS[3];
-  local keyPubsubAdminEventsRemoveClientTopic = KEYS[4];
-
-  local argClientID = ARGV[1];
-  local argRoomID = ARGV[2];
-  local argCurrentTimestamp = tonumber(ARGV[3]);
-
-  local roomClientID = argClientID .. "::" .. argRoomID;
-
-  redis.call("ZREM", keyRoomSetOfKnownClients, roomClientID);
-  redis.call("ZREM", keyRoomSetOfAckedClients, roomClientID);
-  redis.call("ZREM", keyGlobalSetOfKnownClients, roomClientID);
-
-  redis.call("PUBLISH", keyPubsubAdminEventsRemoveClientTopic, roomClientID);
-
-  return 1;
-`;
+    redis.call("PUBLISH", keyPubsubAdminEventsRemoveClientTopic, roomClientID);
+  `)
 
 /*
 var scriptRemoveTimedOutClients = `
@@ -109,106 +100,95 @@ var scriptRemoveTimedOutClients = `
   return timedOutRoomClientIDs;
 `;*/
 
-var scriptConditionalProcessRoomMessages = `
-  local keyRoomSetOfKnownClients = KEYS[1];
-  local keyRoomSetOfAckedClients = KEYS[2];
-  local keyGlobalKnownRooms = KEYS[3];
-  local keyRoomQueue = KEYS[4];
-  local keyRoomPubsub = KEYS[5];
+var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients", "keyGlobalKnownRooms", "keyRoomQueue", "keyRoomPubsub"},
+	[]string{"argRoomID"},
+	`
+    local cp = 0
+    local knownClients = tonumber(redis.call("ZCARD", keyRoomSetOfKnownClients));
 
-  local argRoomID = ARGV[1];
+    cp = "'known " .. knownClients .. " (" .. keyRoomSetOfKnownClients ..")'"
 
-  local knownClients = tonumber(redis.call("ZCARD", keyRoomSetOfKnownClients));
+    if (knownClients > 0) then
+      local ackedClients = tonumber(redis.call("ZCARD", keyRoomSetOfAckedClients));
+      
+      cp = cp .. " -> 'known " .. knownClients .. ", acked: " .. ackedClients .. "'"
+      if (ackedClients > 0 and ackedClients == knownClients) then
+        -- Remove next message from queue
+        local msgs = redis.call("ZPOPMIN", keyRoomQueue, 1);
+      
+        if (#msgs > 0) then
+          -- All known clients ACKed
+          redis.call("DEL", keyRoomSetOfAckedClients); -- Remove ACKed clients
 
-  if (knownClients > 0) then
-    local ackedClients = tonumber(redis.call("ZCARD", keyRoomSetOfAckedClients));
-    
-    if (ackedClients > 0 and ackedClients == knownClients) then
-      -- Remove next message from queue
-      local msgs = redis.call("ZPOPMIN", keyRoomQueue, 1);
-    
-      if (#msgs > 0) then
-        -- All known clients ACKed
-        redis.call("DEL", keyRoomSetOfAckedClients); -- Remove ACKed clients
+          -- Publish message to PUBSUB listeners
+          local res = redis.call("PUBLISH", keyRoomPubsub, msgs[1]);
 
-        -- Publish message to PUBSUB listeners
-        redis.call("PUBLISH", keyRoomPubsub, msgs[1]);
+          cp = cp .. " -> 'PUBLISHED_TO_SYNC " .. res .. "'"
+        end
       end
+    else
+      -- No clients subscribe for sync delivery
+      
+      -- Get all remaining messages
+      local messages = redis.call("ZRANGEBYSCORE", keyRoomQueue, "-inf", "+inf");
+
+      cp = cp .. " -> 'NO_SYNC_CLIENTS msgCount: " .. #messages .. "'"
+
+      for i, msg in ipairs(messages) do
+        -- Publish message to PUBSUB listeners
+        redis.call("PUBLISH", keyRoomPubsub, msg);
+      end
+
+      -- Clear queue
+      redis.call("DEL", keyRoomQueue);
     end
-  else
-    -- No clients subscribe for sync delivery
-    
-    -- Get all remaining messages
-    local messages = redis.call("ZRANGEBYSCORE", keyRoomQueue, "-inf", "+inf");
-    
-    for i, msg in ipairs(messages) do
-      -- Publish message to PUBSUB listeners
-      redis.call("PUBLISH", keyRoomPubsub, msg);
+
+    local remainingMsgCount = tonumber(redis.call("ZCARD", keyRoomQueue))
+
+    if (remainingMsgCount > 0) then
+      redis.call("ZADD", keyGlobalKnownRooms, "CH", remainingMsgCount, argRoomID);
+    else
+      redis.call("ZREM", keyGlobalKnownRooms, argRoomID);
     end
 
-    -- Clear queue
-    redis.call("DEL", keyRoomQueue);
-  end
+    return cp;
+  `)
 
-  local remainingMsgCount = tonumber(redis.call("ZCARD", keyRoomQueue))
+var scriptEnqueueRoomMessage = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyRoomSetOfKnownClients", "keyGlobalKnownRooms", "keyRoomQueue", "keyGlobalAckedRooms"},
+	[]string{"argRoomID", "argPriority", "argMsg"},
+	`
+    redis.call("ZADD", keyRoomQueue, argPriority, argMsg);
+    redis.call("ZINCRBY", keyGlobalKnownRooms, 1, argRoomID);
 
-  if (remainingMsgCount > 0) then
+    local remainingMsgCount = tonumber(redis.call("ZCARD", keyRoomQueue))
+
     redis.call("ZADD", keyGlobalKnownRooms, "CH", remainingMsgCount, argRoomID);
-  else
-    redis.call("ZREM", keyGlobalKnownRooms, argRoomID);
-  end
 
-  return 1;
-`;
+    return "ENQUEUE:" .. argRoomID;
+  `)
 
-var scriptEnqueueRoomMessage = `
-  local keyRoomSetOfKnownClients = KEYS[1];
-  local keyGlobalKnownRooms = KEYS[2];
-  local keyRoomQueue = KEYS[3];
+var scriptAckClientMessage = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients", "keyGlobalKnownRooms", "keyRoomQueue", "keyRoomPubsub"},
+	[]string{"argRoomID", "argClientID", "argCurrentTimestamp"},
+	`
+    local roomClientID = argClientID .. "::" .. argRoomID;
 
-  local argRoomID = ARGV[1];
-  local argPriority = tonumber(ARGV[2]);
-  local argMsg = ARGV[3];
+    local clientExistsInRoom = tonumber(redis.call("ZRANK", keyRoomSetOfKnownClients, roomClientID));
 
-  redis.call("ZADD", keyRoomQueue, argPriority, argMsg);
-  redis.call("ZINCRBY", keyGlobalKnownRooms, 1, argRoomID);
+    if (clientExistsInRoom ~= nil) then
+      redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
+    end
+  `)
 
-  return 1;
-`;
-
-var scriptAckClientMessage = `
-  local keyRoomSetOfKnownClients = KEYS[1];
-  local keyRoomSetOfAckedClients = KEYS[2];
-  local keyGlobalKnownRooms = KEYS[3];
-  local keyRoomQueue = KEYS[4];
-  local keyRoomPubsub = KEYS[5];
-
-  local argRoomID = ARGV[1];
-  local argClientID = ARGV[2];
-  local argCurrentTimestamp = tonumber(ARGV[3]);
-
-  local roomClientID = argClientID .. "::" .. argRoomID;
-
-  local clientExistsInRoom = tonumber(redis.call("ZRANK", keyRoomSetOfKnownClients, roomClientID));
-
-  if (clientExistsInRoom == nil) then
-    return "ERR_NO_CLIENT_ID_IN_ROOM " .. roomClientID;
-  else
-    redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
-  end
-
-  return 1;
-`;
-
-var scriptGetMetrics = `
-  local keyGlobalKnownRooms = KEYS[1];
-  local keyGlobalSetOfKnownClients = KEYS[2];
-
-  local argTopRoomsLimit = tonumber(ARGV[1])
-
-  return {
-    redis.call('ZCARD', keyGlobalKnownRooms),
-    redis.call('ZREVRANGE', keyGlobalKnownRooms, 0, argTopRoomsLimit, 'WITHSCORES'),
-    redis.call('ZCARD', keyGlobalSetOfKnownClients)
-  }
-`;
+var scriptGetMetrics = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyGlobalKnownRooms", "keyGlobalSetOfKnownClients"},
+	[]string{"argTopRoomsLimit"},
+	`
+    return {
+      redis.call('ZCARD', keyGlobalKnownRooms),
+      redis.call('ZREVRANGE', keyGlobalKnownRooms, 0, argTopRoomsLimit, 'WITHSCORES'),
+      redis.call('ZCARD', keyGlobalSetOfKnownClients)
+    }
+  `)
