@@ -98,6 +98,7 @@ func TestSendReceive(t *testing.T) {
 		return
 	}
 
+	time.Sleep(time.Second * 1)
 	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 
 	for i := 0; i < 10 && receivedMsgCount < minReceivedMsgCount; i++ {
@@ -175,6 +176,7 @@ func TestUnsubscribe(t *testing.T) {
 		return
 	}
 
+	time.Sleep(time.Second * 1)
 	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 	time.Sleep(time.Second * 1)
 	client.Unsubscribe(context.TODO(), testRoomId)
@@ -229,6 +231,8 @@ func TestMultipleMsgs(t *testing.T) {
 		t.Error(err)
 		return
 	}
+
+	time.Sleep(time.Second * 1)
 
 	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
