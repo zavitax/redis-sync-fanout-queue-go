@@ -57,7 +57,9 @@ func test1() {
 
 		fmt.Printf("Received: %v\n", strData)
 
-		msg.Ack(ctx)
+		if msg.Ack != nil {
+			msg.Ack(ctx)
+		}
 
 		return nil
 	}) // err == nil {
@@ -105,7 +107,9 @@ func sub_multi() {
 				fmt.Printf("\rSUB: %s -> %d : %s    ", room, receivedMsgCount, strData)
 			}
 
-			msg.Ack(ctx)
+			if msg.Ack != nil {
+				msg.Ack(ctx)
+			}
 
 			return nil
 		}
@@ -120,7 +124,7 @@ func sub_multi() {
 	}
 }
 
-func pub_multi() {
+func pub_multi(oob bool) {
 	client, _ := createQueueClient(createQueueOptions())
 
 	for loop := 0; loop < 50; loop++ {
@@ -128,7 +132,11 @@ func pub_multi() {
 			room := fmt.Sprintf("room-%d", i)
 			msg := room
 
-			client.Send(context.TODO(), room, msg, 1)
+			if oob {
+				client.SendOutOfBand(context.TODO(), room, msg)
+			} else {
+				client.Send(context.TODO(), room, msg, 1)
+			}
 
 			if i%100 == 0 {
 				fmt.Printf("Pub: %s -> %d\n", room, i)
@@ -163,7 +171,9 @@ func sub_single() {
 			fmt.Printf("\rSUB: %d", receivedMsgCount)
 		}
 
-		msg.Ack(ctx)
+		if msg.Ack != nil {
+			msg.Ack(ctx)
+		}
 
 		return nil
 	})
@@ -223,7 +233,9 @@ func main() {
 	case "sub":
 		sub()
 	case "mpub":
-		pub_multi()
+		pub_multi(false)
+	case "mpuboob":
+		pub_multi(true)
 	case "msub":
 		sub_multi()
 	default:
