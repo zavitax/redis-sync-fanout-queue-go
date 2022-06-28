@@ -2,7 +2,17 @@
 
 ## What is it?
 
-Priority queue with synchronous fanout delivery for each room based on Redis
+Priority queue with synchronous fanout delivery for each room based on Redis.
+
+This queue is special by two properties:
+
+1. It delivers each message sent to a room to _all_ subscribers of that room.
+2. It does not deliver the next message until _all_ subscribers of the room ACKnowledge the last message.
+3. It is based entirely on Redis primitives.
+4. Out-of-band messages are also available. They are immediately delivered to all subscribers with no regard to ACKs.
+5. Subscribers can be `Sync = true` (blocking, thus requiring an ACK) or `Sync = false` (non-blocking, thus requiring an ACK).
+
+This allows building distributed systems where edges process messages in a coordinated lock-step with each other.
 
 ## Queue guarantees
 

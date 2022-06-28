@@ -90,8 +90,11 @@ func test1() {
 	client.Close()
 }
 
-func sub_multi() {
-	client, _ := createQueueClient(createQueueOptions())
+func sub_multi(sync bool) {
+	queueOptions := createQueueOptions()
+	queueOptions.Sync = sync
+
+	client, _ := createQueueClient(queueOptions)
 
 	var receivedMsgCount int64
 
@@ -237,7 +240,9 @@ func main() {
 	case "mpuboob":
 		pub_multi(true)
 	case "msub":
-		sub_multi()
+		sub_multi(true)
+	case "msubasync":
+		sub_multi(false)
 	default:
 		test1()
 	}
