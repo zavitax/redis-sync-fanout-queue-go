@@ -20,7 +20,8 @@ var redisOptions = &redis.Options{
 	DB:       0,
 }
 
-func setup() {
+func setup(options *redisSyncFanoutQueue.Options) {
+	// fmt.Printf("Setup test: %v\n", options.RedisKeyPrefix)
 	redis := redis.NewClient(redisOptions)
 	redis.Do(context.Background(), "FLUSHDB").Result()
 	redis.Close()
@@ -40,7 +41,7 @@ func createQueueOptions(
 }
 
 func createQueueClient(options *redisSyncFanoutQueue.Options) (redisSyncFanoutQueue.RedisQueueClient, error) {
-	setup()
+	setup(options)
 
 	return redisSyncFanoutQueue.NewClient(context.TODO(), options)
 }
