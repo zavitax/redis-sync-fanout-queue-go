@@ -220,6 +220,21 @@ func pub() {
 	wg.Wait()
 }
 
+func peek() {
+	client, _ := createQueueClient(createQueueOptions())
+	defer client.Close()
+
+	if msgs, err := client.Peek(context.TODO(), "room-1", 0, 10); err != nil {
+		panic(err)
+	} else {
+		for index, msg := range msgs {
+			strData := (*msg.Data).(string)
+
+			fmt.Printf("Peek: %d: %v\n", index, strData)
+		}
+	}
+}
+
 func main() {
 	args := os.Args[1:]
 	mode := "default"
@@ -243,6 +258,8 @@ func main() {
 		sub_multi(true)
 	case "msubasync":
 		sub_multi(false)
+	case "peek":
+		peek()
 	default:
 		test1()
 	}

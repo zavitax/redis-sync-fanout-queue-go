@@ -27,6 +27,7 @@ type RedisQueueClient interface {
 	GetMetrics(ctx context.Context, options *GetMetricsOptions) (*Metrics, error)
 	Send(ctx context.Context, room string, data interface{}, priority int) error
 	SendOutOfBand(ctx context.Context, room string, data interface{}) error
+	Peek(ctx context.Context, room string, offset int, limit int) ([]*Message, error)
 }
 
 type redisQueueWireMessage struct {
@@ -93,7 +94,7 @@ type redisQueueClient struct {
 
 	statLastMessageLatencies *ringbuffer.RingBuffer
 	statRecvMsgCount         int64
-	statInvalicMsgCount      int64
+	statInvalidMsgCount      int64
 
 	redisKeys []*redisLuaScriptUtils.RedisKey
 }
@@ -286,7 +287,7 @@ func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) 
 		}
 	})()
 
-	c._housekeep(ctx)
+	//c._housekeep(ctx)
 
 	c.housekeep_context, c.housekeep_cancelFunc = context.WithCancel(ctx)
 	go (func() {
@@ -601,6 +602,44 @@ func (c *redisQueueClient) _conditionalProcessRoomsMessages(ctx context.Context)
 	return nil
 }
 
+func (c *redisQueueClient) Peek(ctx context.Context, room string, offset int, limit int) ([]*Message, error) {
+	if msgDataStrings, err := c._peek(ctx, room, offset, limit); err != nil {
+		return nil, err
+	} else {
+		var result []*Message
+
+		for _, msgData := range msgDataStrings {
+			if msg, _, err := c._parseMsgData(msgData); err != nil {
+				return nil, err
+			} else {
+				result = append(result, msg)
+			}
+		}
+
+		return result, nil
+	}
+}
+
+func (c *redisQueueClient) _parseMsgData(msgData string) (*Message, *redisQueueWireMessage, error) {
+	var packet redisQueueWireMessage
+
+	if err := json.Unmarshal([]byte(msgData), &packet); err != nil {
+		atomic.AddInt64(&c.statInvalidMsgCount, 1)
+
+		return nil, nil, err
+	}
+
+	var msg Message
+
+	msg.Data = &packet.Data
+	msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
+	msg.MessageContext.Producer = packet.Producer
+	msg.MessageContext.Sequence = packet.Sequence
+	msg.MessageContext.Latency = time.Now().UTC().Sub(msg.MessageContext.Timestamp)
+
+	return &msg, &packet, nil
+}
+
 func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgData string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -608,22 +647,13 @@ func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgD
 	if roomVal, ok := c.rooms[room]; !ok {
 		return fmt.Errorf("Invalid room: %v", room)
 	} else {
-		var packet redisQueueWireMessage
-		var err error
+		msg, packet, err := c._parseMsgData(msgData)
 
-		if err = json.Unmarshal([]byte(msgData), &packet); err != nil {
-			atomic.AddInt64(&c.statInvalicMsgCount, 1)
+		if err != nil {
+			atomic.AddInt64(&c.statInvalidMsgCount, 1)
 
 			return err
 		}
-
-		var msg Message
-
-		msg.Data = &packet.Data
-		msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
-		msg.MessageContext.Producer = packet.Producer
-		msg.MessageContext.Sequence = packet.Sequence
-		msg.MessageContext.Latency = time.Now().UTC().Sub(msg.MessageContext.Timestamp)
 
 		if c.options.Sync && packet.Sequence > 0 {
 			ackToken := fmt.Sprintf("%s::%s", packet.Producer, room)
@@ -638,7 +668,7 @@ func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgD
 		c.statLastMessageLatencies.Write(msg.MessageContext.Latency)
 		atomic.AddInt64(&c.statRecvMsgCount, 1)
 
-		return roomVal.handleMessage(ctx, &msg)
+		return roomVal.handleMessage(ctx, msg)
 	}
 }
 
@@ -713,7 +743,7 @@ func (c *redisQueueClient) GetMetrics(ctx context.Context, options *GetMetricsOp
 		KnownRoomsCount:                      data[0].(int64),
 		SubscribedRoomsCount:                 len(c.rooms),
 		ReceivedMessagesCount:                c.statRecvMsgCount,
-		InvalidMessagesCount:                 c.statInvalicMsgCount,
+		InvalidMessagesCount:                 c.statInvalidMsgCount,
 		TopRoomsPendingMessagesBacklogLength: 0,
 	}
 
