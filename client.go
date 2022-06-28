@@ -312,23 +312,6 @@ func (c *redisQueueClient) Subscribe(ctx context.Context, room string, handleMes
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if err := c._subscribe(ctx, room, handleMessage); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (c *redisQueueClient) createStdRoomArgs(room string) *redisLuaScriptUtils.RedisScriptArguments {
-	args := make(redisLuaScriptUtils.RedisScriptArguments)
-	args["argClientID"] = c.clientId
-	args["argRoomID"] = room
-	args["argCurrentTimestamp"] = currentTimestamp()
-
-	return &args
-}
-
-func (c *redisQueueClient) _subscribe(ctx context.Context, room string, handleMessage HandleMessageFunc) error {
 	contextWithCancel, contextCancelFunc := context.WithCancel(ctx)
 
 	redisHandle := c.redis_subscriber_message.Subscribe(contextWithCancel, c.keyRoomPubsub(room))
@@ -357,6 +340,15 @@ func (c *redisQueueClient) _subscribe(ctx context.Context, room string, handleMe
 	})()
 
 	return nil
+}
+
+func (c *redisQueueClient) createStdRoomArgs(room string) *redisLuaScriptUtils.RedisScriptArguments {
+	args := make(redisLuaScriptUtils.RedisScriptArguments)
+	args["argClientID"] = c.clientId
+	args["argRoomID"] = room
+	args["argCurrentTimestamp"] = currentTimestamp()
+
+	return &args
 }
 
 func (c *redisQueueClient) Unsubscribe(ctx context.Context, room string) error {
@@ -389,19 +381,43 @@ func (c *redisQueueClient) Close() error {
 }
 
 func (c *redisQueueClient) Send(ctx context.Context, room string, data interface{}, priority int) error {
-	if err := c._send(ctx, room, data, priority); err != nil {
-		return err
+	packet := &redisQueueWireMessage{
+		Timestamp: currentTimestamp(),
+		Producer:  c.clientId,
+		Sequence:  atomic.AddInt64(&c.lastMessageSequenceNumber, 1),
+		Data:      data,
 	}
 
-	return nil
+	jsonString, serr := json.Marshal(packet)
+
+	if serr != nil {
+		return serr
+	}
+
+	args := c.createStdRoomArgs(room)
+	(*args)["argPriority"] = priority
+	(*args)["argMsg"] = string(jsonString)
+
+	_, err := c.callSend.Run(ctx, c.redis, args).Slice()
+
+	return err
 }
 
 func (c *redisQueueClient) SendOutOfBand(ctx context.Context, room string, data interface{}) error {
-	if err := c._sendOutOfBand(ctx, room, data); err != nil {
-		return err
+	packet := &redisQueueWireMessage{
+		Timestamp: currentTimestamp(),
+		Producer:  c.clientId,
+		Sequence:  0,
+		Data:      data,
 	}
 
-	return nil
+	jsonString, serr := json.Marshal(packet)
+
+	if serr != nil {
+		return serr
+	}
+
+	return c.redis.Do(ctx, "PUBLISH", c.keyRoomPubsub(room), jsonString).Err()
 }
 
 func (c *redisQueueClient) Pong(ctx context.Context) error {
@@ -573,7 +589,7 @@ func (c *redisQueueClient) _conditionalProcessRoomsMessages(ctx context.Context)
 	}
 
 	for _, room := range roomIDs {
-		if err := c._conditionalProcessRoomMessages(ctx, room); err != nil {
+		if err := c.callConditionalProcessRoomMessages.Run(ctx, c.redis, c.createStdRoomArgs(room)).Err(); err != nil {
 			return err
 		}
 
@@ -583,10 +599,6 @@ func (c *redisQueueClient) _conditionalProcessRoomsMessages(ctx context.Context)
 	}
 
 	return nil
-}
-
-func (c *redisQueueClient) _conditionalProcessRoomMessages(ctx context.Context, room string) error {
-	return c.callConditionalProcessRoomMessages.Run(ctx, c.redis, c.createStdRoomArgs(room)).Err()
 }
 
 func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgData string) error {
@@ -628,50 +640,6 @@ func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgD
 
 		return roomVal.handleMessage(ctx, &msg)
 	}
-}
-
-func (c *redisQueueClient) _send(ctx context.Context, room string, data interface{}, priority int) error {
-	packet := &redisQueueWireMessage{
-		Timestamp: currentTimestamp(),
-		Producer:  c.clientId,
-		Sequence:  atomic.AddInt64(&c.lastMessageSequenceNumber, 1),
-		Data:      data,
-	}
-
-	jsonString, serr := json.Marshal(packet)
-
-	if serr != nil {
-		return serr
-	}
-
-	args := c.createStdRoomArgs(room)
-	(*args)["argPriority"] = priority
-	(*args)["argMsg"] = string(jsonString)
-
-	if _, err := c.callSend.Run(ctx, c.redis, args).Slice(); err == nil {
-		return nil
-	} else {
-		return err
-	}
-}
-
-func (c *redisQueueClient) _sendOutOfBand(ctx context.Context, room string, data interface{}) error {
-	packet := &redisQueueWireMessage{
-		Timestamp: currentTimestamp(),
-		Producer:  c.clientId,
-		Sequence:  0,
-		Data:      data,
-	}
-
-	jsonString, serr := json.Marshal(packet)
-
-	if serr != nil {
-		return serr
-	}
-
-	err := c.redis.Do(ctx, "PUBLISH", c.keyRoomPubsub(room), jsonString).Err()
-
-	return err
 }
 
 func (c *redisQueueClient) getMetricsParseTopRooms(result *Metrics, data []interface{}) {
