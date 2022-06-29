@@ -54,9 +54,6 @@ var scriptAddSyncClientToRoom = redisLuaScriptUtils.NewRedisScript(
       redis.call("ZADD", keyRoomSetOfKnownClients, "CH", argCurrentTimestamp, roomClientID);
       
       redis.call("ZADD", keyRoomSetOfAckedClients, "CH", argCurrentTimestamp, roomClientID);
-
-      local currRank = tonumber(redis.call("ZRANK", keyGlobalSetOfKnownClients, roomClientID))
-      local currCard = tonumber(redis.call("ZCARD", keyGlobalSetOfKnownClients))
     end
 
     return 1
@@ -149,7 +146,6 @@ var scriptEnqueueRoomMessage = redisLuaScriptUtils.NewRedisScript(
 	[]string{"argRoomID", "argPriority", "argMsg"},
 	`
     redis.call("ZADD", keyRoomQueue, argPriority, argMsg);
-    redis.call("ZINCRBY", keyGlobalKnownRooms, 1, argRoomID);
 
     local remainingMsgCount = tonumber(redis.call("ZCARD", keyRoomQueue))
 
