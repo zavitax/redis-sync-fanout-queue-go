@@ -87,6 +87,8 @@ func Main () {
 
 	if (err != nil) { return }
 
+	defer client.Close()
+
 	err = client.Subscribe(context.TODO(), testRoomId, func (ctx context.Context, msg *redisSyncFanoutQueue.Message) (error) {
 		fmt.Printf("Received: %v", msg.Data)
 
@@ -106,7 +108,5 @@ func Main () {
 	err = client.Unsubscribe(context.TODO(), testRoomId)
 
 	if (err != nil) { return }
-
-	client.Close()
 }
 ```
