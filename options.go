@@ -2,39 +2,43 @@ package redisSyncFanoutQueue
 
 import (
 	"context"
-	"github.com/go-redis/redis/v8"
 	"fmt"
 	"time"
+
+	"github.com/go-redis/redis/v8"
 )
 
-type HandleMessageFunc func (ctx context.Context, msg *Message) (error);
-type HandleRoomEjectedFunc func (ctx context.Context, room *string) (error);
+type HandleMessageFunc func(ctx context.Context, msg *Message) error
+type HandleRoomEjectedFunc func(ctx context.Context, room *string) error
 
 type Options struct {
-	RedisOptions*	redis.Options
-	ClientTimeout time.Duration
-	Sync bool
+	RedisOptions   *redis.Options
+	ClientTimeout  time.Duration
+	Sync           bool
 	RedisKeyPrefix string
 	// HandleMessage HandleMessageFunc
 	HandleRoomEjected HandleRoomEjectedFunc
 }
+type ShardingOptions struct {
+	TotalShardsCount int
+}
 
 var validationError = fmt.Errorf("All Options values must be correctly specified")
 
-func (o* Options) Validate() (error) {
-	if (o == nil) {
+func (o *Options) Validate() error {
+	if o == nil {
 		return validationError
 	}
 
-	if (o.RedisOptions == nil) {
+	if o.RedisOptions == nil {
 		return validationError
 	}
 
-	if (o.ClientTimeout < time.Second) {
+	if o.ClientTimeout < time.Second {
 		return validationError
 	}
 
-	if (len(o.RedisKeyPrefix) < 1) {
+	if len(o.RedisKeyPrefix) < 1 {
 		return validationError
 	}
 
@@ -42,5 +46,21 @@ func (o* Options) Validate() (error) {
 	//	return validationError
 	//}
 
-	return nil;
+	return nil
+}
+
+func (o *ShardingOptions) Validate() error {
+	if o == nil {
+		return validationError
+	}
+
+	if o.TotalShardsCount < 1 {
+		return validationError
+	}
+
+	if o.TotalShardsCount > 1024 {
+		return validationError
+	}
+
+	return nil
 }

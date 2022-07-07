@@ -23,7 +23,6 @@ type RedisQueueClient interface {
 	Subscribe(ctx context.Context, room string, msgHandlerFunc HandleMessageFunc) error
 	Unsubscribe(ctx context.Context, room string) error
 	Close() error
-	Pong(ctx context.Context) error
 	GetMetrics(ctx context.Context, options *GetMetricsOptions) (*Metrics, error)
 	Send(ctx context.Context, room string, data interface{}, priority int) error
 	SendOutOfBand(ctx context.Context, room string, data interface{}) error
@@ -47,6 +46,7 @@ type Message struct {
 		Producer  string
 		Sequence  int64
 		Latency   time.Duration
+		Room      string
 	}
 }
 
@@ -66,6 +66,7 @@ type redisQueueClient struct {
 	redis_subscriber_timeout_handle      *redis.PubSub
 	redis_subscriber_timeout_context     context.Context
 	redis_subscriber_timeout_cancel_func context.CancelFunc
+	redis_subscriber_timeout_closed_chan chan bool
 
 	housekeep_context    context.Context
 	housekeep_cancelFunc context.CancelFunc
@@ -277,6 +278,7 @@ func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) 
 	c.redis_subscriber_timeout = redis.NewClient(c.options.RedisOptions)
 	c.redis_subscriber_message = redis.NewClient(c.options.RedisOptions)
 
+	c.redis_subscriber_timeout_closed_chan = make(chan bool)
 	c.redis_subscriber_timeout_context, c.redis_subscriber_timeout_cancel_func = context.WithCancel(ctx)
 	c.redis_subscriber_timeout_handle = c.redis_subscriber_timeout.Subscribe(c.redis_subscriber_timeout_context, c.keyPubsubAdminEventsRemoveClientTopic)
 
@@ -285,6 +287,8 @@ func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) 
 		for msg := range c.redis_subscriber_timeout_handle.Channel() {
 			c._handleTimeoutMessage(c.redis_subscriber_timeout_context, msg.Channel, msg.Payload)
 		}
+		c.redis_subscriber_timeout_closed_chan <- true
+		close(c.redis_subscriber_timeout_closed_chan)
 	})()
 
 	//c._housekeep(ctx)
@@ -299,7 +303,7 @@ func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) 
 		for {
 			select {
 			case <-c.housekeep_context.Done():
-				break
+				return
 			case <-ticker.C:
 				c._housekeep(c.housekeep_context)
 			}
@@ -369,8 +373,9 @@ func (c *redisQueueClient) Close() error {
 
 	c.housekeep_cancelFunc()
 
-	c.redis_subscriber_timeout_handle.Close()
 	c.redis_subscriber_timeout_cancel_func()
+	c.redis_subscriber_timeout_handle.Close()
+	<-c.redis_subscriber_timeout_closed_chan
 
 	for key := range c.rooms {
 		c._unsubscribe(context.Background(), key)
@@ -419,12 +424,6 @@ func (c *redisQueueClient) SendOutOfBand(ctx context.Context, room string, data 
 	}
 
 	return c.redis.Do(ctx, "PUBLISH", c.keyRoomPubsub(room), jsonString).Err()
-}
-
-func (c *redisQueueClient) Pong(ctx context.Context) error {
-	c._pong(ctx)
-
-	return nil
 }
 
 func (c *redisQueueClient) _housekeep(ctx context.Context) error {
@@ -609,7 +608,7 @@ func (c *redisQueueClient) Peek(ctx context.Context, room string, offset int, li
 		var result []*Message
 
 		for _, msgData := range msgDataStrings {
-			if msg, _, err := c._parseMsgData(msgData); err != nil {
+			if msg, _, err := c._parseMsgData(msgData, room); err != nil {
 				return nil, err
 			} else {
 				result = append(result, msg)
@@ -620,7 +619,7 @@ func (c *redisQueueClient) Peek(ctx context.Context, room string, offset int, li
 	}
 }
 
-func (c *redisQueueClient) _parseMsgData(msgData string) (*Message, *redisQueueWireMessage, error) {
+func (c *redisQueueClient) _parseMsgData(msgData string, room string) (*Message, *redisQueueWireMessage, error) {
 	var packet redisQueueWireMessage
 
 	if err := json.Unmarshal([]byte(msgData), &packet); err != nil {
@@ -635,6 +634,7 @@ func (c *redisQueueClient) _parseMsgData(msgData string) (*Message, *redisQueueW
 	msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
 	msg.MessageContext.Producer = packet.Producer
 	msg.MessageContext.Sequence = packet.Sequence
+	msg.MessageContext.Room = room
 	msg.MessageContext.Latency = time.Now().UTC().Sub(msg.MessageContext.Timestamp)
 
 	return &msg, &packet, nil
@@ -647,7 +647,7 @@ func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgD
 	if roomVal, ok := c.rooms[room]; !ok {
 		return fmt.Errorf("Invalid room: %v", room)
 	} else {
-		msg, packet, err := c._parseMsgData(msgData)
+		msg, packet, err := c._parseMsgData(msgData, room)
 
 		if err != nil {
 			atomic.AddInt64(&c.statInvalidMsgCount, 1)
