@@ -66,7 +66,6 @@ type redisQueueClient struct {
 	redis_subscriber_timeout_handle      *redis.PubSub
 	redis_subscriber_timeout_context     context.Context
 	redis_subscriber_timeout_cancel_func context.CancelFunc
-	redis_subscriber_timeout_closed_chan chan bool
 
 	housekeep_context    context.Context
 	housekeep_cancelFunc context.CancelFunc
@@ -278,7 +277,6 @@ func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) 
 	c.redis_subscriber_timeout = redis.NewClient(c.options.RedisOptions)
 	c.redis_subscriber_message = redis.NewClient(c.options.RedisOptions)
 
-	c.redis_subscriber_timeout_closed_chan = make(chan bool)
 	c.redis_subscriber_timeout_context, c.redis_subscriber_timeout_cancel_func = context.WithCancel(ctx)
 	c.redis_subscriber_timeout_handle = c.redis_subscriber_timeout.Subscribe(c.redis_subscriber_timeout_context, c.keyPubsubAdminEventsRemoveClientTopic)
 
@@ -287,8 +285,6 @@ func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) 
 		for msg := range c.redis_subscriber_timeout_handle.Channel() {
 			c._handleTimeoutMessage(c.redis_subscriber_timeout_context, msg.Channel, msg.Payload)
 		}
-		c.redis_subscriber_timeout_closed_chan <- true
-		close(c.redis_subscriber_timeout_closed_chan)
 	})()
 
 	//c._housekeep(ctx)
@@ -375,7 +371,6 @@ func (c *redisQueueClient) Close() error {
 
 	c.redis_subscriber_timeout_cancel_func()
 	c.redis_subscriber_timeout_handle.Close()
-	<-c.redis_subscriber_timeout_closed_chan
 
 	for key := range c.rooms {
 		c._unsubscribe(context.Background(), key)
@@ -474,25 +469,29 @@ func (c *redisQueueClient) _ack(ctx context.Context, ackToken string) error {
 
 func (c *redisQueueClient) _handleTimeoutMessage(ctx context.Context, _channel string, message string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	parts := strings.SplitN(message, "::", 2)
 
 	clientId := parts[0]
 
 	if clientId != c.clientId {
+		c.mu.Unlock()
 		return
 	}
 
-	for room, roomVal := range c.rooms {
+	roomsCopy := c.rooms
+	for _, roomVal := range c.rooms {
 		roomVal.redisHandle.Close() // Unsubscribe
+	}
 
+	c.rooms = make(map[string]*roomData)
+	c.mu.Unlock()
+
+	for room, _ := range roomsCopy {
 		if c.options.HandleRoomEjected != nil {
 			c.options.HandleRoomEjected(ctx, &room)
 		}
 	}
-
-	c.rooms = make(map[string]*roomData)
 }
 
 func (c *redisQueueClient) _handleRoomMessage(ctx context.Context, channel string, message string) {
@@ -506,7 +505,11 @@ func (c *redisQueueClient) _handleRoomMessage(ctx context.Context, channel strin
 }
 
 func (c *redisQueueClient) _unsubscribe(ctx context.Context, room string) error {
-	roomVal := c.rooms[room]
+	roomVal, ok := c.rooms[room]
+
+	if !ok {
+		return fmt.Errorf("No such room: %s", room)
+	}
 
 	roomVal.redisHandle.Close()
 
@@ -642,11 +645,12 @@ func (c *redisQueueClient) _parseMsgData(msgData string, room string) (*Message,
 
 func (c *redisQueueClient) _handleMessage(ctx context.Context, room string, msgData string) error {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 
 	if roomVal, ok := c.rooms[room]; !ok {
+		c.mu.RUnlock()
 		return fmt.Errorf("Invalid room: %v", room)
 	} else {
+		c.mu.RUnlock()
 		msg, packet, err := c._parseMsgData(msgData, room)
 
 		if err != nil {

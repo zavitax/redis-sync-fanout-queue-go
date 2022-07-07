@@ -11,8 +11,8 @@ import (
 	redisSyncFanoutQueue "github.com/zavitax/redis-sync-fanout-queue-go"
 )
 
-var testShardedMessageContent = "test message content"
-var testShardedRoomId = "GO-ROOM-TEST"
+var testMessageContent = "test message content"
+var testRoomId = "GO-ROOM-TEST"
 
 var redisShardedOptions = &redis.Options{
 	Addr:     "127.0.0.1:6379",
@@ -21,7 +21,6 @@ var redisShardedOptions = &redis.Options{
 }
 
 func setupSharded(options *redisSyncFanoutQueue.Options) {
-	fmt.Printf("Setup test: %v\n", options.RedisKeyPrefix)
 	redis := redis.NewClient(redisShardedOptions)
 	redis.Do(context.Background(), "FLUSHDB").Result()
 	redis.Close()
@@ -80,15 +79,15 @@ func TestShardedSendReceive(t *testing.T) {
 		return
 	}
 
-	err = client.Subscribe(context.TODO(), testShardedRoomId, func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
+	err = client.Subscribe(context.TODO(), testRoomId, func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
 		if msg.Data == nil {
 			t.Error("Received nil data")
 			return nil
 		}
 
 		strData := (*msg.Data).(string)
-		if strData != testShardedMessageContent {
-			t.Errorf("Expected '%v' but received '%v'", testShardedMessageContent, strData)
+		if strData != testMessageContent {
+			t.Errorf("Expected '%v' but received '%v'", testMessageContent, strData)
 			return nil
 		}
 
@@ -107,7 +106,7 @@ func TestShardedSendReceive(t *testing.T) {
 	}
 
 	time.Sleep(time.Second * 1)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 
 	for i := 0; i < 10 && receivedMsgCount < minReceivedMsgCount; i++ {
 		time.Sleep(time.Second * 1)
@@ -130,7 +129,7 @@ func TestShardedGetMetrics(t *testing.T) {
 		return
 	}
 
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 
 	getMetricsOptions := &redisSyncFanoutQueue.GetMetricsOptions{
 		TopRoomsLimit: 10,
@@ -160,15 +159,15 @@ func TestShardedUnsubscribe(t *testing.T) {
 		return
 	}
 
-	err = client.Subscribe(context.TODO(), testShardedRoomId, func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
+	err = client.Subscribe(context.TODO(), testRoomId, func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
 		if msg.Data == nil {
 			t.Error("Received nil data")
 			return nil
 		}
 
 		strData := (*msg.Data).(string)
-		if strData != testShardedMessageContent {
-			t.Errorf("Expected '%v' but received '%v'", testShardedMessageContent, strData)
+		if strData != testMessageContent {
+			t.Errorf("Expected '%v' but received '%v'", testMessageContent, strData)
 			return nil
 		}
 
@@ -185,10 +184,10 @@ func TestShardedUnsubscribe(t *testing.T) {
 	}
 
 	time.Sleep(time.Second * 1)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 	time.Sleep(time.Second * 1)
-	client.Unsubscribe(context.TODO(), testShardedRoomId)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1) // Should not receive this message
+	client.Unsubscribe(context.TODO(), testRoomId)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1) // Should not receive this message
 
 	for i := 0; i < 3 && receivedMsgCount < exactReceivedMsgCount+1; i++ {
 		time.Sleep(time.Second * 1)
@@ -216,15 +215,15 @@ func TestShardedMultipleMsgs(t *testing.T) {
 		return
 	}
 
-	err = client.Subscribe(context.TODO(), testShardedRoomId, func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
+	err = client.Subscribe(context.TODO(), testRoomId, func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
 		if msg.Data == nil {
 			t.Error("Received nil data")
 			return nil
 		}
 
 		strData := (*msg.Data).(string)
-		if strData != testShardedMessageContent {
-			t.Errorf("Expected '%v' but received '%v'", testShardedMessageContent, strData)
+		if strData != testMessageContent {
+			t.Errorf("Expected '%v' but received '%v'", testMessageContent, strData)
 			return nil
 		}
 
@@ -242,11 +241,11 @@ func TestShardedMultipleMsgs(t *testing.T) {
 
 	time.Sleep(time.Second * 1)
 
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
-	client.Send(context.TODO(), testShardedRoomId, testShardedMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
+	client.Send(context.TODO(), testRoomId, testMessageContent, 1)
 
 	for i := 0; i < 10 && receivedMsgCount < exactReceivedMsgCount; i++ {
 		time.Sleep(time.Second * 1)

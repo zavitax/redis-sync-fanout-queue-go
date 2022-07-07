@@ -202,3 +202,96 @@ func Main () {
 	if (err != nil) { return }
 }
 ```
+
+### Clients management layer example
+
+The clients management layer manages a list of rooms & clients locally, so ACKs are sent to redis only when all the local clients have ACKnowledged a message.
+
+This reduces stress on the redis server by performing as much as possible in-process.
+
+```go
+package main
+
+import (
+	"github.com/go-redis/redis/v8"
+	"context"
+	"time"
+	"github.com/zavitax/redis-sync-fanout-queue-go"
+	"fmt"
+)
+
+var testMessageContent = "test message content"
+var testRoomId = "GO-ROOM-TEST"
+
+var redisOptions = &redis.Options{
+	Addr: "127.0.0.1:6379",
+	Password: "",
+	DB: 0,
+};
+
+func createQueueOptions (
+	testId string,
+) (*redisSyncFanoutQueue.Options) {
+	result := &redisSyncFanoutQueue.Options{
+		RedisOptions: redisOptions,
+		ClientTimeout: time.Second * 15,
+		RedisKeyPrefix: fmt.Sprintf("{test-redis-sync-fanout-queue-with-proxy-layer}::%v", testId),
+		Sync: true,
+	}
+
+	return result
+}
+
+func createRoomProxyManager(options *redisSyncFanoutQueue.Options) (redisSyncFanoutQueue.RoomProxyManager, error) {
+	roomMsgProxyOptions := &redisSyncFanoutQueue.RoomProxyManagerOptions{
+		RedisQueueClientProvider: func(ctx context.Context, roomEjectedFunc redisSyncFanoutQueue.HandleRoomEjectedFunc) (redisSyncFanoutQueue.RedisQueueClient, error) {
+			opt := *options
+
+			opt.HandleRoomEjected = roomEjectedFunc
+
+			return redisSyncFanoutQueue.NewClient(context.TODO(), &opt)
+		},
+	}
+
+	return redisSyncFanoutQueue.NewRoomProxyManager(context.TODO(), roomMsgProxyOptions)
+}
+
+func Main () {
+	manager, err := createRoomProxyManager(createQueueOptions("TestRoomsJoinPartSendReceive"))
+
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	clientOptions := &redisSyncFanoutQueue.ClientOptions{
+		MessageHandler: func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
+			fmt.Printf("Received message: %v\n", msg)
+
+			if msg.Ack != nil {
+				msg.Ack(ctx)
+			}
+
+			return nil
+		},
+		ClientEjectedHandler: func(ctx context.Context, client *redisSyncFanoutQueue.ClientHandle) error {
+			return nil
+		},
+	}
+
+	client1, _ := manager.AddClient(context.TODO(), clientOptions)
+	client2, _ := manager.AddClient(context.TODO(), clientOptions)
+
+	client1.AddRoom(context.TODO(), "room1")
+	client1.AddRoom(context.TODO(), "room2")
+
+	client2.AddRoom(context.TODO(), "room2")
+
+	manager.Send(context.TODO(), "room1", "test message for room 1", 1)
+	manager.Send(context.TODO(), "room2", "test message for room 2", 1)
+
+	time.Sleep(time.Second)
+
+	manager.Close()
+}
+```

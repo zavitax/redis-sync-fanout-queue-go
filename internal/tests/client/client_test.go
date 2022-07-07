@@ -21,7 +21,6 @@ var redisOptions = &redis.Options{
 }
 
 func setup(options *redisSyncFanoutQueue.Options) {
-	fmt.Printf("Setup test: %v\n", options.RedisKeyPrefix)
 	redis := redis.NewClient(redisOptions)
 	redis.Do(context.Background(), "FLUSHDB").Result()
 	redis.Close()
