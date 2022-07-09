@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
-
-	"github.com/google/uuid"
 )
 
 type RoomProxyManager interface {
@@ -19,27 +16,6 @@ type RoomProxyManager interface {
 	SendOutOfBand(ctx context.Context, room string, data interface{}) error
 	Peek(ctx context.Context, room string, offset int, limit int) ([]*Message, error)
 }
-
-type Room interface {
-}
-
-type ClientHandle struct {
-	mu           sync.RWMutex
-	rooms        map[string]*roomProxy
-	clientId     string
-	options      *ClientOptions
-	roomProxyMgr *roomProxyMgr
-}
-
-type roomProxy struct {
-	mu                sync.RWMutex
-	roomProxyMgr      *roomProxyMgr
-	roomId            string
-	clients           map[string]*ClientHandle
-	ackedClientsCount int32
-	lastAck           AckMessageFunc
-}
-
 type roomProxyMgr struct {
 	mu               sync.RWMutex
 	rooms            map[string]*roomProxy
@@ -53,23 +29,6 @@ type RoomProxyManagerOptions struct {
 	RedisQueueClientProvider RedisQueueClientProviderFunc
 }
 
-type ClientOptions struct {
-	MessageHandler       HandleMessageFunc
-	ClientEjectedHandler func(ctx context.Context, client *ClientHandle) error
-}
-
-func (o *ClientOptions) Validate() error {
-	if o == nil {
-		return fmt.Errorf("ClientOptions is nil")
-	}
-
-	if o.MessageHandler == nil {
-		return fmt.Errorf("ClientOptions.MessageHandler is nil")
-	}
-
-	return nil
-}
-
 func (o *RoomProxyManagerOptions) Validate() error {
 	if o == nil {
 		return fmt.Errorf("RoomProxyOptions is nil")
@@ -80,17 +39,6 @@ func (o *RoomProxyManagerOptions) Validate() error {
 	}
 
 	return nil
-}
-
-func (this *roomProxyMgr) Close() error {
-	this.mu.Lock()
-	defer this.mu.Unlock()
-
-	for _, client := range this.clients {
-		this.removeClient(context.Background(), client)
-	}
-
-	return this.redisQueueClient.Close()
 }
 
 func NewRoomProxyManager(ctx context.Context, options *RoomProxyManagerOptions) (RoomProxyManager, error) {
@@ -111,6 +59,17 @@ func NewRoomProxyManager(ctx context.Context, options *RoomProxyManagerOptions) 
 	}
 }
 
+func (this *roomProxyMgr) Close() error {
+	this.mu.Lock()
+	defer this.mu.Unlock()
+
+	for _, client := range this.clients {
+		this.removeClient(context.Background(), client)
+	}
+
+	return this.redisQueueClient.Close()
+}
+
 func (this *roomProxyMgr) roomEjectedFunc(ctx context.Context, roomId *string) error {
 	room, ok := this.rooms[*roomId]
 
@@ -119,18 +78,24 @@ func (this *roomProxyMgr) roomEjectedFunc(ctx context.Context, roomId *string) e
 	}
 
 	room.mu.Lock()
-	defer room.mu.Unlock()
+	room.mu.Unlock()
 
 	delete(this.rooms, *roomId)
 
+	ejectedClients := []*ClientHandle{}
+
 	for _, client := range room.clients {
 		room.removeClient(ctx, client)
-		this.RemoveClient(ctx, client)
+		this.removeClient(ctx, client)
 
 		if client.options.ClientEjectedHandler != nil {
-			if err := client.options.ClientEjectedHandler(ctx, client); err != nil {
-				// TODO: Log error and ignore
-			}
+			ejectedClients = append(ejectedClients, client)
+		}
+	}
+
+	for _, client := range ejectedClients {
+		if err := client.options.ClientEjectedHandler(ctx, client); err != nil {
+			// TODO: Log error and ignore
 		}
 	}
 
@@ -155,15 +120,17 @@ func (this *roomProxyMgr) getOrCreateRoom(ctx context.Context, roomId string) (*
 	this.mu.RUnlock()
 
 	if ok {
+		// Optimistic check succeeded
 		return room, nil
 	} else {
+		// Double-action lock
 		this.mu.Lock()
 		defer this.mu.Unlock()
 
 		room, ok = this.rooms[roomId]
 		if !ok {
 			var err error
-			room, err = this._createRoom(ctx, roomId)
+			room, err = newRoom(ctx, this, roomId)
 
 			if err != nil {
 				return nil, err
@@ -177,35 +144,23 @@ func (this *roomProxyMgr) getOrCreateRoom(ctx context.Context, roomId string) (*
 }
 
 func (this *roomProxyMgr) AddClient(ctx context.Context, options *ClientOptions) (*ClientHandle, error) {
-	if err := options.Validate(); err != nil {
+	if client, err := newClientHandle(this, options); err != nil {
 		return nil, err
+	} else {
+		this.mu.Lock()
+		defer this.mu.Unlock()
+
+		this.clients[client.clientId] = client
+
+		return client, nil
 	}
-
-	this.mu.Lock()
-	defer this.mu.Unlock()
-
-	client := &ClientHandle{}
-	client.clientId = uuid.New().String()
-	client.rooms = make(map[string]*roomProxy)
-	client.options = options
-	client.roomProxyMgr = this
-
-	this.clients[client.clientId] = client
-
-	return client, nil
 }
 
 func (this *roomProxyMgr) RemoveClient(ctx context.Context, client *ClientHandle) error {
-	for _, room := range client.rooms {
-		room.removeClient(ctx, client)
-	}
-
 	this.mu.Lock()
 	defer this.mu.Unlock()
 
-	delete(this.clients, client.clientId)
-
-	return nil
+	return this.removeClient(ctx, client)
 }
 
 func (this *roomProxyMgr) removeClient(ctx context.Context, client *ClientHandle) error {
@@ -216,131 +171,6 @@ func (this *roomProxyMgr) removeClient(ctx context.Context, client *ClientHandle
 	delete(this.clients, client.clientId)
 
 	return nil
-}
-
-func (this *roomProxy) checkAck(ctx context.Context, ackedCount int32) error {
-	if this.lastAck == nil {
-		return nil
-	}
-
-	if ackedCount == int32(len(this.clients)) {
-		if err := this.lastAck(ctx); err != nil {
-			return err
-		}
-
-		this.ackedClientsCount = 0
-		this.lastAck = nil
-	}
-
-	return nil
-}
-
-func (this *roomProxy) addClient(ctx context.Context, client *ClientHandle) error {
-	if _, ok := this.clients[client.clientId]; ok {
-		return nil
-	}
-
-	this.clients[client.clientId] = client
-	atomic.AddInt32(&this.ackedClientsCount, 1)
-	client.rooms[this.roomId] = this
-
-	if len(this.clients) == 1 {
-		this.roomProxyMgr.redisQueueClient.Subscribe(
-			ctx,
-			this.roomId,
-			func(ctx context.Context, msg *Message) error {
-				this.mu.RLock()
-				defer this.mu.RUnlock()
-
-				if msg.Ack != nil {
-					this.lastAck = msg.Ack
-
-					msg.Ack = func(ctx context.Context) error {
-						this.mu.RLock()
-						defer this.mu.RUnlock()
-
-						ackedCount := atomic.AddInt32(&this.ackedClientsCount, 1)
-
-						return this.checkAck(ctx, ackedCount)
-					}
-				}
-
-				for _, client := range this.clients {
-					if err := client._processMsg(ctx, msg); err != nil {
-						// TODO: Log error and ignore
-					}
-				}
-
-				return nil
-			})
-	}
-
-	return nil
-}
-
-func (this *roomProxy) removeClient(ctx context.Context, client *ClientHandle) error {
-	if _, ok := this.clients[client.clientId]; !ok {
-		return nil
-	}
-
-	delete(client.rooms, this.roomId)
-	delete(this.clients, client.clientId)
-	ackedCount := atomic.AddInt32(&this.ackedClientsCount, -1)
-
-	if len(this.clients) == 0 {
-		return this.roomProxyMgr.removeRoom(ctx, this.roomId)
-	} else {
-		this.checkAck(ctx, ackedCount)
-	}
-
-	return nil
-}
-
-func (this *roomProxyMgr) _createRoom(ctx context.Context, roomId string) (*roomProxy, error) {
-	result := &roomProxy{}
-
-	result.roomProxyMgr = this
-	result.roomId = roomId
-	result.clients = make(map[string]*ClientHandle)
-	result.ackedClientsCount = 0
-
-	return result, nil
-}
-
-func (client *ClientHandle) _processMsg(ctx context.Context, msg *Message) error {
-	return client.options.MessageHandler(ctx, msg)
-}
-
-func (this *ClientHandle) AddRoom(ctx context.Context, roomId string) (Room, error) {
-	this.mu.Lock()
-	defer this.mu.Unlock()
-
-	if room, ok := this.rooms[roomId]; ok {
-		return room, nil
-	} else {
-		if room, err := this.roomProxyMgr.getOrCreateRoom(ctx, roomId); err != nil {
-			return nil, err
-		} else {
-			if err := room.addClient(ctx, this); err != nil {
-				this.roomProxyMgr.removeRoom(ctx, room.roomId)
-
-				return nil, err
-			} else {
-				return room, nil
-			}
-		}
-	}
-}
-
-func (this *ClientHandle) RemoveRoom(ctx context.Context, roomId string) error {
-	this.mu.Lock()
-	defer this.mu.Unlock()
-
-	if room, ok := this.rooms[roomId]; ok {
-		return room.removeClient(ctx, this)
-	} else {
-		return fmt.Errorf("Room '%s' not found", roomId)
-	}
 }
 
 func (this *roomProxyMgr) GetMetrics(ctx context.Context, options *GetMetricsOptions) (*Metrics, error) {
