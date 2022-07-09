@@ -51,6 +51,35 @@ func (client *ClientHandle) processMsg(ctx context.Context, msg *Message) error 
 	return client.options.MessageHandler(ctx, msg)
 }
 
+func (this *ClientHandle) GetClientID() string {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	return this.clientId
+}
+
+func (this *ClientHandle) GetRoomProxyManager() RoomProxyManager {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	return this.roomProxyMgr
+}
+
+func (this *ClientHandle) GetRooms() []string {
+	this.mu.RLock()
+	defer this.mu.RUnlock()
+
+	keys := make([]string, len(this.rooms))
+
+	i := 0
+	for k := range this.rooms {
+		keys[i] = k
+		i++
+	}
+
+	return keys
+}
+
 func (this *ClientHandle) AddRoom(ctx context.Context, roomId string) (Room, error) {
 	this.mu.Lock()
 	defer this.mu.Unlock()

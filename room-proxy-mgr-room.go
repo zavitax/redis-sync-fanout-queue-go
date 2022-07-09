@@ -52,7 +52,7 @@ func (this *roomProxy) addClient(ctx context.Context, client *ClientHandle) erro
 	}
 
 	this.clients[client.clientId] = client
-	atomic.AddInt32(&this.ackedClientsCount, 1)
+	//atomic.AddInt32(&this.ackedClientsCount, 1)
 	client.rooms[this.roomId] = this
 
 	if len(this.clients) == 1 {
