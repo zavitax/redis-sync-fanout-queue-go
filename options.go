@@ -9,7 +9,7 @@ import (
 )
 
 type HandleMessageFunc func(ctx context.Context, msg *Message) error
-type HandleRoomEjectedFunc func(ctx context.Context, room *string) error
+type HandleRoomEjectedFunc func(ctx context.Context, clientId, room *string) error
 
 type Options struct {
 	RedisOptions   *redis.Options

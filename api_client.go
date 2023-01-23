@@ -50,6 +50,7 @@ type redisQueueApiClient struct {
 	housekeep_context    context.Context
 	housekeep_cancelFunc context.CancelFunc
 
+	callCreateClientID                 *redisLuaScriptUtils.CompiledRedisScript
 	callRemoveSyncClientFromRoom       *redisLuaScriptUtils.CompiledRedisScript
 	callPong                           *redisLuaScriptUtils.CompiledRedisScript
 	callGetMetrics                     *redisLuaScriptUtils.CompiledRedisScript
@@ -97,10 +98,11 @@ func NewPubClient(ctx context.Context, options *Options) (RedisQueueApiClient, e
 	c.keyGlobalKnownRooms = fmt.Sprintf("%s::global::last-client-id-timestamp", c.options.RedisKeyPrefix)
 
 	c.redisKeys = []*redisLuaScriptUtils.RedisKey{
-		redisLuaScriptUtils.NewStaticKey("keyLastTimestamp", c.keyGlobalKnownRooms),
+		redisLuaScriptUtils.NewStaticKey("keyClientIDSequence", fmt.Sprintf("%s::global::last-client-id-seq", c.options.RedisKeyPrefix)),
+		redisLuaScriptUtils.NewStaticKey("keyLastTimestamp", fmt.Sprintf("%s::global::last-client-id-timestamp", c.options.RedisKeyPrefix)),
 		redisLuaScriptUtils.NewStaticKey("keyGlobalSetOfKnownClients", c.keyGlobalSetOfKnownClients),
 		redisLuaScriptUtils.NewStaticKey("keyPubsubAdminEventsRemoveClientTopic", fmt.Sprintf("%s::global::pubsub::admin::removed-clients", c.options.RedisKeyPrefix)),
-		redisLuaScriptUtils.NewStaticKey("keyGlobalKnownRooms", fmt.Sprintf("%s::global::known-rooms", c.options.RedisKeyPrefix)),
+		redisLuaScriptUtils.NewStaticKey("keyGlobalKnownRooms", c.keyGlobalKnownRooms),
 		redisLuaScriptUtils.NewStaticKey("keyGlobalAckedRooms", fmt.Sprintf("%s::global::acked-rooms", c.options.RedisKeyPrefix)),
 		redisLuaScriptUtils.NewDynamicKey("keyRoomQueue", func(args *redisLuaScriptUtils.RedisScriptArguments) string {
 			return c.keyRoomQueue((*args)["argRoomID"].(string))
@@ -115,6 +117,14 @@ func NewPubClient(ctx context.Context, options *Options) (RedisQueueApiClient, e
 	}
 
 	var err error
+
+	if c.callCreateClientID, err = redisLuaScriptUtils.CompileRedisScripts(
+		[]*redisLuaScriptUtils.RedisScript{
+			scriptCreateClientID,
+		}, c.redisKeys); err != nil {
+		c.redis.Close()
+		return nil, err
+	}
 
 	if c.callRemoveSyncClientFromRoom, err = redisLuaScriptUtils.CompileRedisScripts(
 		[]*redisLuaScriptUtils.RedisScript{
@@ -282,6 +292,7 @@ func (c *redisQueueApiClient) Send(ctx context.Context, clientId string, room st
 		Producer:  clientId,
 		Room:      room,
 		Data:      data,
+		AckToken:  fmt.Sprintf("%s::%s", clientId, room),
 	}
 
 	jsonString, serr := json.Marshal(packet)
@@ -305,6 +316,7 @@ func (c *redisQueueApiClient) SendOutOfBand(ctx context.Context, clientId string
 		Producer:  clientId,
 		Room:      room,
 		Data:      data,
+		AckToken:  "",
 	}
 
 	jsonString, serr := json.Marshal(packet)
@@ -356,7 +368,6 @@ func (c *redisQueueApiClient) _ack(ctx context.Context, clientId string, ackToke
 	room := parts[1]
 
 	args := c.createStdRoomArgs(clientId, room)
-	(*args)["argClientID"] = clientId
 
 	return c.callAckClientMessage.Run(ctx, c.redis, args).Err()
 }
@@ -451,7 +462,7 @@ func (c *redisQueueApiClient) Peek(ctx context.Context, room string, offset int,
 		var result []*Message
 
 		for _, msgData := range msgDataStrings {
-			if msg, _, err := c._parseMsgData(msgData); err != nil {
+			if msg, _, err := parseMsgData(msgData); err != nil {
 				return nil, err
 			} else {
 				result = append(result, msg)
@@ -460,24 +471,6 @@ func (c *redisQueueApiClient) Peek(ctx context.Context, room string, offset int,
 
 		return result, nil
 	}
-}
-
-func (c *redisQueueApiClient) _parseMsgData(msgData string) (*Message, *redisQueueWireMessage, error) {
-	var packet redisQueueWireMessage
-
-	if err := json.Unmarshal([]byte(msgData), &packet); err != nil {
-		return nil, nil, err
-	}
-
-	var msg Message
-
-	msg.Data = &packet.Data
-	msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
-	msg.MessageContext.Producer = packet.Producer
-	msg.MessageContext.Room = packet.Room
-	msg.MessageContext.Latency = time.Now().UTC().Sub(msg.MessageContext.Timestamp)
-
-	return &msg, &packet, nil
 }
 
 func (c *redisQueueApiClient) getMetricsParseTopRooms(result *ApiMetrics, data []interface{}) {
@@ -525,4 +518,14 @@ func (c *redisQueueApiClient) Ping(ctx context.Context, clientId string, room st
 
 func (c *redisQueueApiClient) AckMessage(ctx context.Context, clientId string, ackToken string) error {
 	return c._ack(ctx, clientId, ackToken)
+}
+
+func (c *redisQueueApiClient) createClientId(ctx context.Context) (string, error) {
+	args := make(redisLuaScriptUtils.RedisScriptArguments, 0)
+	args["argCurrentTimestamp"] = currentTimestamp()
+	if result, err := c.callCreateClientID.Run(ctx, c.redis, &args).StringSlice(); err != nil {
+		return "ERROR_OBTAINING_CLIENT_ID", err
+	} else {
+		return result[0], nil
+	}
 }

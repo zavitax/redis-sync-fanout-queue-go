@@ -1,15 +1,11 @@
 package redisSyncFanoutQueue
 
 import (
-	"context"
 	"time"
 )
 
-type AckMessageFunc func(ctx context.Context) error
-
 type Message struct {
 	Data           *interface{}
-	Ack            AckMessageFunc
 	MessageContext struct {
 		Timestamp time.Time
 		Producer  string
@@ -24,4 +20,5 @@ type redisQueueWireMessage struct {
 	Producer  string      `json:"c"`
 	Room      string      `json:"r"`
 	Data      interface{} `json:"d"`
+	AckToken  string      `json:"a",omitempty`
 }
