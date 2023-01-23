@@ -74,9 +74,9 @@ var scriptRemoveSyncClientFromRoom = redisLuaScriptUtils.NewRedisScript(
 
 var scriptSendOutOfBandRoomMessage = redisLuaScriptUtils.NewRedisScript(
 	[]string{"keyRoomPubsub"},
-	[]string{"argRoomID", "argMsgPacketString"},
+	[]string{"argRoomID", "argMsg"},
 	`
-    local res = redis.call("RPUSH", keyRoomPubsub, argMsgPacketString);
+    local res = redis.call("RPUSH", keyRoomPubsub, argMsg);
 
     return res;
   `)
