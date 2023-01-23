@@ -34,7 +34,7 @@ type redisQueueWorkerClient struct {
 	mu sync.RWMutex
 	wg sync.WaitGroup
 
-	options                  *Options
+	options                  *WorkerOptions
 	redis_subscriber_timeout *redis.Client
 	redis_subscriber_message *redis.Client
 
@@ -55,7 +55,7 @@ func (c *redisQueueWorkerClient) keyGlobalLock(tag string) string {
 	return fmt.Sprintf("%s::lock::%s", c.options.RedisKeyPrefix, tag)
 }
 
-func NewWorkerClient(ctx context.Context, options *Options) (RedisQueueWorkerClient, error) {
+func NewWorkerClient(ctx context.Context, options *WorkerOptions) (RedisQueueWorkerClient, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
@@ -63,6 +63,8 @@ func NewWorkerClient(ctx context.Context, options *Options) (RedisQueueWorkerCli
 	var c = &redisQueueWorkerClient{}
 
 	c.options = options
+
+	c.redis_context, c.redis_cancel_func = context.WithCancel(context.Background())
 
 	c.keyPubsubAdminEventsRemoveClientTopic = fmt.Sprintf("%s::global::pubsub::admin::removed-clients", c.options.RedisKeyPrefix)
 	c.keyRoomPubsub = fmt.Sprintf("%s::global::msg-queue", c.options.RedisKeyPrefix)
@@ -141,7 +143,7 @@ func (c *redisQueueWorkerClient) _handleTimeoutMessage(ctx context.Context, mess
 	clientId := parts[0]
 	room := parts[1]
 
-	c.options.HandleRoomEjected(ctx, &clientId, &room)
+	c.options.HandleRoomClientTimeout(ctx, &clientId, &room)
 }
 
 func (c *redisQueueWorkerClient) _handleMessage(ctx context.Context, msgData string) error {
@@ -156,8 +158,7 @@ func (c *redisQueueWorkerClient) _handleMessage(ctx context.Context, msgData str
 	c.statLastMessageLatencies.Write(msg.MessageContext.Latency)
 	atomic.AddInt64(&c.statRecvMsgCount, 1)
 
-	// TODO: Handle message
-	return nil
+	return c.options.HandleMessage(ctx, msg)
 }
 
 func (c *redisQueueWorkerClient) getMetricsParseLatencies(result *WorkerMetrics) {

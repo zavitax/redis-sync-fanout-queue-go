@@ -19,6 +19,7 @@ func parseMsgData(msgData string) (*Message, *redisQueueWireMessage, error) {
 	var msg Message
 
 	msg.Data = &packet.Data
+	msg.AckToken = packet.AckToken
 	msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
 	msg.MessageContext.Producer = packet.Producer
 	msg.MessageContext.Room = packet.Room

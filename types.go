@@ -6,6 +6,7 @@ import (
 
 type Message struct {
 	Data           *interface{}
+	AckToken       *string
 	MessageContext struct {
 		Timestamp time.Time
 		Producer  string
@@ -20,5 +21,5 @@ type redisQueueWireMessage struct {
 	Producer  string      `json:"c"`
 	Room      string      `json:"r"`
 	Data      interface{} `json:"d"`
-	AckToken  string      `json:"a",omitempty`
+	AckToken  *string     `json:"a"`
 }

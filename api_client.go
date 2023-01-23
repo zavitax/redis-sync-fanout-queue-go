@@ -30,13 +30,14 @@ type ApiMetrics struct {
 }
 
 type RedisQueueApiClient interface {
+	CreateClientID(ctx context.Context) (string, error)
 	Close() error
-	Send(ctx context.Context, clientId string, room string, data interface{}, priority int) error
-	SendOutOfBand(ctx context.Context, clientId string, room string, data interface{}) error
+	Send(ctx context.Context, producerId string, room string, data interface{}, priority int) error
+	SendOutOfBand(ctx context.Context, producerId string, room string, data interface{}) error
 	Peek(ctx context.Context, room string, offset int, limit int) ([]*Message, error)
 	GetMetrics(ctx context.Context, options *GetApiMetricsOptions) (*ApiMetrics, error)
 	Ping(ctx context.Context, clientId string, room string) error
-	AckMessage(ctx context.Context, clientId string, ackToken string) error
+	AckMessage(ctx context.Context, clientId string, ackToken *string) error
 	Subscribe(ctx context.Context, clientId string, room string) error
 	Unsubscribe(ctx context.Context, clientId string, room string) error
 }
@@ -44,7 +45,7 @@ type RedisQueueApiClient interface {
 type redisQueueApiClient struct {
 	mu sync.RWMutex
 
-	options *Options
+	options *ApiOptions
 	redis   *redis.Client
 
 	housekeep_context    context.Context
@@ -84,7 +85,7 @@ func (c *redisQueueApiClient) keyGlobalLock(tag string) string {
 	return fmt.Sprintf("%s::lock::%s", c.options.RedisKeyPrefix, tag)
 }
 
-func NewPubClient(ctx context.Context, options *Options) (RedisQueueApiClient, error) {
+func NewApiClient(ctx context.Context, options *ApiOptions) (RedisQueueApiClient, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}
@@ -286,13 +287,15 @@ func (c *redisQueueApiClient) Close() error {
 	return c.redis.Close()
 }
 
-func (c *redisQueueApiClient) Send(ctx context.Context, clientId string, room string, data interface{}, priority int) error {
+func (c *redisQueueApiClient) Send(ctx context.Context, producerId string, room string, data interface{}, priority int) error {
+	token := fmt.Sprintf("%s::%s", producerId, room)
+
 	packet := &redisQueueWireMessage{
 		Timestamp: currentTimestamp(),
-		Producer:  clientId,
+		Producer:  producerId,
 		Room:      room,
 		Data:      data,
-		AckToken:  fmt.Sprintf("%s::%s", clientId, room),
+		AckToken:  &token,
 	}
 
 	jsonString, serr := json.Marshal(packet)
@@ -301,7 +304,7 @@ func (c *redisQueueApiClient) Send(ctx context.Context, clientId string, room st
 		return serr
 	}
 
-	args := c.createStdRoomArgs(clientId, room)
+	args := c.createStdRoomArgs("ApiClient", room)
 	(*args)["argPriority"] = priority
 	(*args)["argMsg"] = string(jsonString)
 
@@ -310,13 +313,13 @@ func (c *redisQueueApiClient) Send(ctx context.Context, clientId string, room st
 	return err
 }
 
-func (c *redisQueueApiClient) SendOutOfBand(ctx context.Context, clientId string, room string, data interface{}) error {
+func (c *redisQueueApiClient) SendOutOfBand(ctx context.Context, producerId string, room string, data interface{}) error {
 	packet := &redisQueueWireMessage{
 		Timestamp: currentTimestamp(),
-		Producer:  clientId,
+		Producer:  producerId,
 		Room:      room,
 		Data:      data,
-		AckToken:  "",
+		AckToken:  nil,
 	}
 
 	jsonString, serr := json.Marshal(packet)
@@ -325,7 +328,7 @@ func (c *redisQueueApiClient) SendOutOfBand(ctx context.Context, clientId string
 		return serr
 	}
 
-	args := c.createStdRoomArgs(clientId, room)
+	args := c.createStdRoomArgs("ApiClient", room)
 	(*args)["argMsg"] = string(jsonString)
 
 	_, err := c.callSendOutOfBand.Run(ctx, c.redis, args).Slice()
@@ -358,8 +361,8 @@ func (c *redisQueueApiClient) _peek(ctx context.Context, room string, offset int
 	return c.redis.Do(ctx, "ZRANGEBYSCORE", c.keyRoomQueue(room), "-inf", "+inf", "LIMIT", offset, limit).StringSlice()
 }
 
-func (c *redisQueueApiClient) _ack(ctx context.Context, clientId string, ackToken string) error {
-	parts := strings.SplitN(ackToken, "::", 2)
+func (c *redisQueueApiClient) _ack(ctx context.Context, clientId string, ackToken *string) error {
+	parts := strings.SplitN(*ackToken, "::", 2)
 
 	if len(parts) < 2 {
 		return fmt.Errorf("Invalid ackToken %v", ackToken)
@@ -516,7 +519,7 @@ func (c *redisQueueApiClient) Ping(ctx context.Context, clientId string, room st
 	return c._pong(ctx, clientId, room)
 }
 
-func (c *redisQueueApiClient) AckMessage(ctx context.Context, clientId string, ackToken string) error {
+func (c *redisQueueApiClient) AckMessage(ctx context.Context, clientId string, ackToken *string) error {
 	return c._ack(ctx, clientId, ackToken)
 }
 
@@ -528,4 +531,8 @@ func (c *redisQueueApiClient) createClientId(ctx context.Context) (string, error
 	} else {
 		return result[0], nil
 	}
+}
+
+func (c *redisQueueApiClient) CreateClientID(ctx context.Context) (string, error) {
+	return c.createClientId(ctx)
 }
