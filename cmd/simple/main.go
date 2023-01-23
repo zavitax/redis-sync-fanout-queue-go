@@ -33,7 +33,7 @@ func createQueueOptions() *redisSyncFanoutQueue.Options {
 	return result
 }
 
-func createQueueClient(options *redisSyncFanoutQueue.Options) (redisSyncFanoutQueue.RedisQueueClient, error) {
+func createQueueClient(options *redisSyncFanoutQueue.Options) (redisSyncFanoutQueue.RedisQueuePubClient, error) {
 	return redisSyncFanoutQueue.NewClient(context.TODO(), options)
 }
 
