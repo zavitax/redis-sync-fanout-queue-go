@@ -55,6 +55,10 @@ func (c *redisQueueWorkerClient) keyGlobalLock(tag string) string {
 	return fmt.Sprintf("%s::lock::%s", c.options.RedisKeyPrefix, tag)
 }
 
+func (c *redisQueueWorkerClient) keyRoomSetOfKnownClients(room string) string {
+	return fmt.Sprintf("%s::room::%s::known-clients", c.options.RedisKeyPrefix, room)
+}
+
 func NewWorkerClient(ctx context.Context, options *WorkerOptions) (RedisQueueWorkerClient, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
@@ -106,9 +110,8 @@ func NewWorkerClient(ctx context.Context, options *WorkerOptions) (RedisQueueWor
 				for _, msg := range msgs {
 					c._handleMessage(c.redis_context, msg)
 				}
-			}
-
-			if err == context.Canceled {
+			} else if err == context.Canceled {
+				// Context cancelled, we're done
 				return
 			}
 		}
@@ -158,7 +161,25 @@ func (c *redisQueueWorkerClient) _handleMessage(ctx context.Context, msgData str
 	c.statLastMessageLatencies.Write(msg.MessageContext.Latency)
 	atomic.AddInt64(&c.statRecvMsgCount, 1)
 
-	return c.options.HandleMessage(ctx, msg)
+	clientIds, err := c.redis_subscriber_message.ZRangeByScore(ctx, c.keyRoomSetOfKnownClients(msg.Room), &redis.ZRangeBy{
+		Min:    "-inf",
+		Max:    "+inf",
+		Offset: 0,
+		Count:  1000000,
+	}).Result()
+
+	if err != nil {
+		return err
+	}
+
+	for _, clientKey := range clientIds {
+		parts := strings.SplitN(clientKey, "::", 2)
+
+		clientId := parts[0]
+		c.options.HandleMessage(ctx, &clientId, msg)
+	}
+
+	return nil
 }
 
 func (c *redisQueueWorkerClient) getMetricsParseLatencies(result *WorkerMetrics) {

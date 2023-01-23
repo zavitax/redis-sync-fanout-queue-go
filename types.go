@@ -7,12 +7,11 @@ import (
 type Message struct {
 	Data           *interface{}
 	AckToken       *string
+	Room           string
 	MessageContext struct {
 		Timestamp time.Time
 		Producer  string
-		Sequence  int64
 		Latency   time.Duration
-		Room      string
 	}
 }
 

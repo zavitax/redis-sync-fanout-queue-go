@@ -51,13 +51,16 @@ func pubsub() {
 	fmt.Printf("test\n")
 
 	client, _ := createApiClient(createApiOptions())
-	clientId, _ := client.CreateClientID(context.Background())
+	clientId1, _ := client.CreateClientID(context.Background())
+	clientId2, _ := client.CreateClientID(context.Background())
+
+	fmt.Println("Clients: ", clientId1, clientId2)
 
 	wo := createWorkerOptions()
 	wo.HandleRoomClientTimeout = func(ctx context.Context, clientId *string, roomId *string) error {
 		return nil
 	}
-	wo.HandleMessage = func(ctx context.Context, msg *redisSyncFanoutQueue.Message) error {
+	wo.HandleMessage = func(ctx context.Context, clientId *string, msg *redisSyncFanoutQueue.Message) error {
 		if msg.Data == nil {
 			fmt.Printf("Received nil data\n")
 			return nil
@@ -69,10 +72,10 @@ func pubsub() {
 			return nil
 		}
 
-		fmt.Printf("Received: %v\n", strData)
+		fmt.Printf("Received: client[%s] room[%s]: %v\n", *clientId, msg.Room, strData)
 
 		if msg.AckToken != nil {
-			return client.AckMessage(ctx, clientId, msg.AckToken)
+			client.AckMessage(ctx, *clientId, msg.AckToken)
 		}
 
 		return nil
@@ -80,7 +83,8 @@ func pubsub() {
 
 	worker, _ := createWorkerClient(wo)
 
-	client.Subscribe(context.TODO(), clientId, testRoomId)
+	client.Subscribe(context.TODO(), clientId1, testRoomId)
+	client.Subscribe(context.TODO(), clientId2, testRoomId)
 
 	//time.Sleep(time.Second * 1)
 
@@ -91,7 +95,8 @@ func pubsub() {
 		client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1)
 	}
 
-	time.Sleep(time.Second * 3)
+	fmt.Println("Wait")
+	time.Sleep(time.Second * 5)
 
 	metrics, _ := client.GetMetrics(context.TODO(), &redisSyncFanoutQueue.GetApiMetricsOptions{
 		TopRoomsLimit: 10,
@@ -99,10 +104,10 @@ func pubsub() {
 
 	fmt.Printf("Metrics: %v\n", metrics)
 
-	client.Unsubscribe(context.TODO(), clientId, testRoomId)
+	client.Unsubscribe(context.TODO(), clientId1, testRoomId)
 	fmt.Printf("Send should not receive\n")
 	client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1)
-	time.Sleep(time.Second * 3)
+	time.Sleep(time.Second * 30)
 
 	fmt.Printf("Close\n")
 

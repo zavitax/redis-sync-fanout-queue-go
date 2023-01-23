@@ -20,9 +20,9 @@ func parseMsgData(msgData string) (*Message, *redisQueueWireMessage, error) {
 
 	msg.Data = &packet.Data
 	msg.AckToken = packet.AckToken
+	msg.Room = packet.Room
 	msg.MessageContext.Timestamp = time.UnixMilli(packet.Timestamp).UTC()
 	msg.MessageContext.Producer = packet.Producer
-	msg.MessageContext.Room = packet.Room
 	msg.MessageContext.Latency = time.Now().UTC().Sub(msg.MessageContext.Timestamp)
 
 	return &msg, &packet, nil

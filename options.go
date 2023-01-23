@@ -8,7 +8,7 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-type HandleMessageFunc func(ctx context.Context, msg *Message) error
+type HandleMessageFunc func(ctx context.Context, clientId *string, msg *Message) error
 type HandleRoomClientTimeoutFunc func(ctx context.Context, clientId, room *string) error
 
 type ApiOptions struct {

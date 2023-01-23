@@ -62,7 +62,6 @@ type redisQueueApiClient struct {
 	callSubscribe                      *redisLuaScriptUtils.CompiledRedisScript
 	callUnsubscribe                    *redisLuaScriptUtils.CompiledRedisScript
 
-	keyLastTimestamp           string
 	keyGlobalSetOfKnownClients string
 	keyGlobalKnownRooms        string
 
@@ -96,7 +95,7 @@ func NewApiClient(ctx context.Context, options *ApiOptions) (RedisQueueApiClient
 	c.redis = redis.NewClient(c.options.RedisOptions)
 
 	c.keyGlobalSetOfKnownClients = fmt.Sprintf("%s::global::known-clients", c.options.RedisKeyPrefix)
-	c.keyGlobalKnownRooms = fmt.Sprintf("%s::global::last-client-id-timestamp", c.options.RedisKeyPrefix)
+	c.keyGlobalKnownRooms = fmt.Sprintf("%s::global::known-rooms", c.options.RedisKeyPrefix)
 
 	c.redisKeys = []*redisLuaScriptUtils.RedisKey{
 		redisLuaScriptUtils.NewStaticKey("keyClientIDSequence", fmt.Sprintf("%s::global::last-client-id-seq", c.options.RedisKeyPrefix)),
@@ -265,8 +264,6 @@ func (c *redisQueueApiClient) Unsubscribe(ctx context.Context, clientId string, 
 
 func (c *redisQueueApiClient) _unsubscribe(ctx context.Context, clientId string, room string) error {
 	return c.callUnsubscribe.Run(ctx, c.redis, c.createStdRoomArgs(clientId, room)).Err()
-
-	return nil
 }
 
 func (c *redisQueueApiClient) createStdRoomArgs(clientId string, room string) *redisLuaScriptUtils.RedisScriptArguments {
@@ -372,6 +369,7 @@ func (c *redisQueueApiClient) _ack(ctx context.Context, clientId string, ackToke
 
 	args := c.createStdRoomArgs(clientId, room)
 
+	fmt.Println("callAckClientMessage args: ", args)
 	return c.callAckClientMessage.Run(ctx, c.redis, args).Err()
 }
 
