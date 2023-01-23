@@ -30,7 +30,7 @@ type RedisQueueWorkerClient interface {
 	GetMetrics(ctx context.Context, options *GetWorkerMetricsOptions) (*WorkerMetrics, error)
 }
 
-type redisQueueClient struct {
+type redisQueueWorkerClient struct {
 	mu sync.RWMutex
 	wg sync.WaitGroup
 
@@ -51,7 +51,7 @@ type redisQueueClient struct {
 	redisKeys []*redisLuaScriptUtils.RedisKey
 }
 
-func (c *redisQueueClient) keyGlobalLock(tag string) string {
+func (c *redisQueueWorkerClient) keyGlobalLock(tag string) string {
 	return fmt.Sprintf("%s::lock::%s", c.options.RedisKeyPrefix, tag)
 }
 
@@ -60,7 +60,7 @@ func NewWorkerClient(ctx context.Context, options *Options) (RedisQueueWorkerCli
 		return nil, err
 	}
 
-	var c = &redisQueueClient{}
+	var c = &redisQueueWorkerClient{}
 
 	c.options = options
 
@@ -115,7 +115,7 @@ func NewWorkerClient(ctx context.Context, options *Options) (RedisQueueWorkerCli
 	return c, nil
 }
 
-func (c *redisQueueClient) createStdRoomArgs(clientId string, room string) *redisLuaScriptUtils.RedisScriptArguments {
+func (c *redisQueueWorkerClient) createStdRoomArgs(clientId string, room string) *redisLuaScriptUtils.RedisScriptArguments {
 	args := make(redisLuaScriptUtils.RedisScriptArguments)
 	args["argClientID"] = clientId
 	args["argRoomID"] = room
@@ -124,7 +124,7 @@ func (c *redisQueueClient) createStdRoomArgs(clientId string, room string) *redi
 	return &args
 }
 
-func (c *redisQueueClient) Close() error {
+func (c *redisQueueWorkerClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -135,7 +135,7 @@ func (c *redisQueueClient) Close() error {
 	return nil
 }
 
-func (c *redisQueueClient) _handleTimeoutMessage(ctx context.Context, message string) {
+func (c *redisQueueWorkerClient) _handleTimeoutMessage(ctx context.Context, message string) {
 	parts := strings.SplitN(message, "::", 2)
 
 	clientId := parts[0]
@@ -144,7 +144,7 @@ func (c *redisQueueClient) _handleTimeoutMessage(ctx context.Context, message st
 	c.options.HandleRoomEjected(ctx, &clientId, &room)
 }
 
-func (c *redisQueueClient) _handleMessage(ctx context.Context, msgData string) error {
+func (c *redisQueueWorkerClient) _handleMessage(ctx context.Context, msgData string) error {
 	msg, _, err := parseMsgData(msgData)
 
 	if err != nil {
@@ -160,7 +160,7 @@ func (c *redisQueueClient) _handleMessage(ctx context.Context, msgData string) e
 	return nil
 }
 
-func (c *redisQueueClient) getMetricsParseLatencies(result *WorkerMetrics) {
+func (c *redisQueueWorkerClient) getMetricsParseLatencies(result *WorkerMetrics) {
 	latencies := make([]interface{}, c.statLastMessageLatencies.Size)
 	copy(latencies, c.statLastMessageLatencies.Container)
 
@@ -198,7 +198,7 @@ func (c *redisQueueClient) getMetricsParseLatencies(result *WorkerMetrics) {
 	}
 }
 
-func (c *redisQueueClient) GetMetrics(ctx context.Context, options *GetWorkerMetricsOptions) (*WorkerMetrics, error) {
+func (c *redisQueueWorkerClient) GetMetrics(ctx context.Context, options *GetWorkerMetricsOptions) (*WorkerMetrics, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
