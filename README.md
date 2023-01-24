@@ -71,15 +71,6 @@ func createApiOptions() *redisSyncFanoutQueue.ApiOptions {
 	return result
 }
 
-func createWorkerOptions() *redisSyncFanoutQueue.WorkerOptions {
-	result := &redisSyncFanoutQueue.WorkerOptions{
-		RedisOptions:   redisOptions,
-		RedisKeyPrefix: fmt.Sprintf("{test-redis-sync-fanout-queue}::%v", "test"),
-	}
-
-	return result
-}
-
 func createApiClient(options *redisSyncFanoutQueue.ApiOptions) (redisSyncFanoutQueue.RedisQueueApiClient, error) {
 	return redisSyncFanoutQueue.NewApiClient(context.TODO(), options)
 }
@@ -145,15 +136,6 @@ func createApiOptions() *redisSyncFanoutQueue.ApiOptions {
 	result := &redisSyncFanoutQueue.ApiOptions{
 		RedisOptions:   redisOptions,
 		ClientTimeout:  time.Second * 15,
-		RedisKeyPrefix: fmt.Sprintf("{test-redis-sync-fanout-queue}::%v", "test"),
-	}
-
-	return result
-}
-
-func createWorkerOptions() *redisSyncFanoutQueue.WorkerOptions {
-	result := &redisSyncFanoutQueue.WorkerOptions{
-		RedisOptions:   redisOptions,
 		RedisKeyPrefix: fmt.Sprintf("{test-redis-sync-fanout-queue}::%v", "test"),
 	}
 
@@ -349,15 +331,6 @@ func createApiOptions() *redisSyncFanoutQueue.ApiOptions {
 	result := &redisSyncFanoutQueue.ApiOptions{
 		RedisOptions:   redisOptions,
 		ClientTimeout:  time.Second * 15,
-		RedisKeyPrefix: fmt.Sprintf("{test-redis-sync-fanout-queue}::%v", "test"),
-	}
-
-	return result
-}
-
-func createWorkerOptions() *redisSyncFanoutQueue.WorkerOptions {
-	result := &redisSyncFanoutQueue.WorkerOptions{
-		RedisOptions:   redisOptions,
 		RedisKeyPrefix: fmt.Sprintf("{test-redis-sync-fanout-queue}::%v", "test"),
 	}
 
