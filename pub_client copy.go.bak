@@ -19,7 +19,7 @@ func currentTimestamp() int64 {
 	return time.Now().UTC().UnixMilli()
 }
 
-type RedisQueueClient interface {
+type RedisQueuePubClient interface {
 	Subscribe(ctx context.Context, room string, msgHandlerFunc HandleMessageFunc) error
 	Unsubscribe(ctx context.Context, room string) error
 	Close() error
@@ -119,7 +119,7 @@ func (c *redisQueueClient) keyGlobalLock(tag string) string {
 	return fmt.Sprintf("%s::lock::%s", c.options.RedisKeyPrefix, tag)
 }
 
-func NewClient(ctx context.Context, options *Options) (RedisQueueClient, error) {
+func NewClient(ctx context.Context, options *Options) (RedisQueuePubClient, error) {
 	if err := options.Validate(); err != nil {
 		return nil, err
 	}

@@ -8,24 +8,25 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-type HandleMessageFunc func(ctx context.Context, msg *Message) error
-type HandleRoomEjectedFunc func(ctx context.Context, room *string) error
+type HandleMessageFunc func(ctx context.Context, clientId *string, msg *Message) error
+type HandleRoomClientTimeoutFunc func(ctx context.Context, clientId, room *string) error
 
-type Options struct {
+type ApiOptions struct {
 	RedisOptions   *redis.Options
 	ClientTimeout  time.Duration
-	Sync           bool
 	RedisKeyPrefix string
-	// HandleMessage HandleMessageFunc
-	HandleRoomEjected HandleRoomEjectedFunc
 }
-type ShardingOptions struct {
-	TotalShardsCount int
+
+type WorkerOptions struct {
+	RedisOptions            *redis.Options
+	RedisKeyPrefix          string
+	HandleMessage           HandleMessageFunc
+	HandleRoomClientTimeout HandleRoomClientTimeoutFunc
 }
 
 var validationError = fmt.Errorf("All Options values must be correctly specified")
 
-func (o *Options) Validate() error {
+func (o *ApiOptions) Validate() error {
 	if o == nil {
 		return validationError
 	}
@@ -42,23 +43,27 @@ func (o *Options) Validate() error {
 		return validationError
 	}
 
-	//if (o.HandleMessage == nil) {
-	//	return validationError
-	//}
-
 	return nil
 }
 
-func (o *ShardingOptions) Validate() error {
+func (o *WorkerOptions) Validate() error {
 	if o == nil {
 		return validationError
 	}
 
-	if o.TotalShardsCount < 1 {
+	if o.RedisOptions == nil {
 		return validationError
 	}
 
-	if o.TotalShardsCount > 1024 {
+	if len(o.RedisKeyPrefix) < 1 {
+		return validationError
+	}
+
+	if o.HandleMessage == nil {
+		return validationError
+	}
+
+	if o.HandleRoomClientTimeout == nil {
 		return validationError
 	}
 

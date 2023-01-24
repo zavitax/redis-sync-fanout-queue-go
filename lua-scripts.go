@@ -69,30 +69,17 @@ var scriptRemoveSyncClientFromRoom = redisLuaScriptUtils.NewRedisScript(
     redis.call("ZREM", keyRoomSetOfAckedClients, roomClientID);
     redis.call("ZREM", keyGlobalSetOfKnownClients, roomClientID);
 
-    redis.call("PUBLISH", keyPubsubAdminEventsRemoveClientTopic, roomClientID);
+    redis.call("RPUSH", keyPubsubAdminEventsRemoveClientTopic, roomClientID);
   `)
 
-/*
-var scriptRemoveTimedOutClients = `
-  local keyGlobalSetOfKnownClients = KEYS[1];
-  local keyRoomSetOfKnownClients = KEYS[2];
-  local keyRoomSetOfAckedClients = KEYS[3];
-  local keyPubsubAdminEventsRemoveClientTopic = KEYS[4];
+var scriptSendOutOfBandRoomMessage = redisLuaScriptUtils.NewRedisScript(
+	[]string{"keyRoomPubsub"},
+	[]string{"argRoomID", "argMsg"},
+	`
+    local res = redis.call("RPUSH", keyRoomPubsub, argMsg);
 
-  local argMaxTimestampToRemove = tonumber(ARGV[1]);
-
-  local timedOutRoomClientIDs = redis.call("ZRANGEBYSCORE", keyGlobalSetOfKnownClients, "-inf", argMaxTimestampToRemove);
-
-  for i, roomClientID in ipairs(timedOutRoomClientIDs) do
-    redis.call("ZREM", keyRoomSetOfKnownClients, roomClientID);
-    redis.call("ZREM", keyRoomSetOfAckedClients, roomClientID);
-    redis.call("ZREM", keyGlobalSetOfKnownClients, roomClientID);
-
-    redis.call("PUBLISH", keyPubsubAdminEventsRemoveClientTopic, roomClientID);
-  end
-
-  return timedOutRoomClientIDs;
-`;*/
+    return res;
+  `)
 
 var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
 	[]string{"keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients", "keyGlobalKnownRooms", "keyRoomQueue", "keyRoomPubsub"},
@@ -112,7 +99,7 @@ var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
           redis.call("DEL", keyRoomSetOfAckedClients); -- Remove ACKed clients
 
           -- Publish message to PUBSUB listeners
-          local res = redis.call("PUBLISH", keyRoomPubsub, msgs[1]);
+          local res = redis.call("RPUSH", keyRoomPubsub, msgs[1]);
         end
       end
     else
@@ -123,7 +110,7 @@ var scriptConditionalProcessRoomMessages = redisLuaScriptUtils.NewRedisScript(
 
       for i, msg in ipairs(messages) do
         -- Publish message to PUBSUB listeners
-        redis.call("PUBLISH", keyRoomPubsub, msg);
+        redis.call("RPUSH", keyRoomPubsub, msg);
       end
 
       -- Clear queue
