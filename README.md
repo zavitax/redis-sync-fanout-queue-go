@@ -187,7 +187,7 @@ func sub(clientsCount int) {
 			for _, clientId := range clientIds {
 				// Must call periodically for each Client ID & Room ID comibnation to keep
 				// Client ID alive.
-				client.Ping(context.Background(), clientId, testRoomId)
+				client.Ping(context.Background(), clientId)
 			}
 
 			metrics, _ := client.GetMetrics(context.TODO(), &redisSyncFanoutQueue.GetApiMetricsOptions{
