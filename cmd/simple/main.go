@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -47,14 +48,78 @@ func createWorkerClient(options *redisSyncFanoutQueue.WorkerOptions) (redisSyncF
 	return redisSyncFanoutQueue.NewWorkerClient(context.TODO(), options)
 }
 
-func pubsub() {
-	fmt.Printf("test\n")
+func pub() {
+	doneC := make(chan os.Signal, 1)
+	signal.Notify(doneC)
 
 	client, _ := createApiClient(createApiOptions())
-	clientId1, _ := client.CreateClientID(context.Background())
-	clientId2, _ := client.CreateClientID(context.Background())
 
-	fmt.Println("Clients: ", clientId1, clientId2)
+	i := 0
+	ticker := time.NewTicker(time.Second)
+	done := false
+	for !done {
+		select {
+		case <-doneC:
+			done = true
+		case <-ticker.C:
+			i++
+
+			client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1)
+
+			fmt.Printf("Send: %v\r", i)
+		}
+	}
+	ticker.Stop()
+
+	client.Close()
+}
+
+func sub(clientsCount int) {
+	doneC := make(chan os.Signal, 1)
+	signal.Notify(doneC)
+
+	client, _ := createApiClient(createApiOptions())
+
+	clientIds := []string{}
+	for i := 0; i < clientsCount; i++ {
+		clientId, _ := client.CreateClientID(context.Background())
+		client.Subscribe(context.TODO(), clientId, testRoomId)
+		clientIds = append(clientIds, clientId)
+	}
+
+	ticker := time.NewTicker(time.Second)
+	done := false
+	for !done {
+		select {
+		case <-doneC:
+			done = true
+		case <-ticker.C:
+			for _, clientId := range clientIds {
+				client.Ping(context.Background(), clientId, testRoomId)
+			}
+
+			metrics, _ := client.GetMetrics(context.TODO(), &redisSyncFanoutQueue.GetApiMetricsOptions{
+				TopRoomsLimit: 10,
+			})
+
+			fmt.Printf("Metrics: %v\n", metrics)
+		}
+	}
+	ticker.Stop()
+
+	for _, clientId := range clientIds {
+		client.Unsubscribe(context.Background(), clientId, testRoomId)
+	}
+
+	client.Close()
+}
+
+func worker() {
+	doneC := make(chan os.Signal, 1)
+	signal.Notify(doneC)
+
+	// Used for ACKs
+	client, _ := createApiClient(createApiOptions())
 
 	wo := createWorkerOptions()
 	wo.HandleRoomClientTimeout = func(ctx context.Context, clientId *string, roomId *string) error {
@@ -75,6 +140,8 @@ func pubsub() {
 		fmt.Printf("Received: client[%s] room[%s]: %v\n", *clientId, msg.Room, strData)
 
 		if msg.AckToken != nil {
+			//time.Sleep(time.Second * 3)
+			// This should be called by the actual client, when it's done processing the message
 			client.AckMessage(ctx, *clientId, msg.AckToken)
 		}
 
@@ -83,53 +150,51 @@ func pubsub() {
 
 	worker, _ := createWorkerClient(wo)
 
-	client.Subscribe(context.TODO(), clientId1, testRoomId)
-	client.Subscribe(context.TODO(), clientId2, testRoomId)
+	ticker := time.NewTicker(time.Second)
+	done := false
+	for !done {
+		select {
+		case <-doneC:
+			done = true
+		case <-ticker.C:
+			metrics, _ := worker.GetMetrics(context.TODO(), &redisSyncFanoutQueue.GetWorkerMetricsOptions{})
 
-	//time.Sleep(time.Second * 1)
-
-	//client.Pong(context.TODO())
-
-	for i := 0; i < 3; i++ {
-		fmt.Printf("Send\n")
-		client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1)
+			fmt.Printf("Metrics: %v\n", metrics)
+		}
 	}
+	ticker.Stop()
 
-	fmt.Println("Wait")
-	time.Sleep(time.Second * 5)
-
-	metrics, _ := client.GetMetrics(context.TODO(), &redisSyncFanoutQueue.GetApiMetricsOptions{
-		TopRoomsLimit: 10,
-	})
-
-	fmt.Printf("Metrics: %v\n", metrics)
-
-	client.Unsubscribe(context.TODO(), clientId1, testRoomId)
-	fmt.Printf("Send should not receive\n")
-	client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1)
-	time.Sleep(time.Second * 30)
-
-	fmt.Printf("Close\n")
-
-	client.Close()
 	worker.Close()
+	client.Close()
 }
 
 func peek() {
+	doneC := make(chan os.Signal, 1)
+	signal.Notify(doneC)
+
 	client, _ := createApiClient(createApiOptions())
-	defer client.Close()
 
-	// clientId, _ := client.CreateClientID(context.Background())
+	ticker := time.NewTicker(time.Second)
+	done := false
+	for !done {
+		select {
+		case <-doneC:
+			done = true
+		case <-ticker.C:
+			if msgs, err := client.Peek(context.TODO(), testRoomId, 0, 10); err != nil {
+				panic(err)
+			} else {
+				for index, msg := range msgs {
+					strData := (*msg.Data).(string)
 
-	if msgs, err := client.Peek(context.TODO(), "room-1", 0, 10); err != nil {
-		panic(err)
-	} else {
-		for index, msg := range msgs {
-			strData := (*msg.Data).(string)
-
-			fmt.Printf("Peek: %d: %v\n", index, strData)
+					fmt.Printf("Peek: %d: %v\n", index, strData)
+				}
+			}
 		}
 	}
+	ticker.Stop()
+
+	client.Close()
 }
 
 func main() {
@@ -143,11 +208,15 @@ func main() {
 	}
 
 	switch mode {
-	case "pubsub":
-		pubsub()
+	case "pub":
+		pub()
+	case "sub":
+		sub(5)
+	case "worker":
+		worker()
 	case "peek":
 		peek()
 	default:
-		pubsub()
+		fmt.Println("Please specify mode: worker, sub, pub, peek")
 	}
 }
