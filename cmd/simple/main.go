@@ -95,7 +95,7 @@ func sub(clientsCount int) {
 			done = true
 		case <-ticker.C:
 			for _, clientId := range clientIds {
-				client.Ping(context.Background(), clientId, testRoomId)
+				client.Ping(context.Background(), clientId)
 			}
 
 			metrics, _ := client.GetMetrics(context.TODO(), &redisSyncFanoutQueue.GetApiMetricsOptions{

@@ -36,7 +36,7 @@ type RedisQueueApiClient interface {
 	SendOutOfBand(ctx context.Context, producerId string, room string, data interface{}) error
 	Peek(ctx context.Context, room string, offset int, limit int) ([]*Message, error)
 	GetMetrics(ctx context.Context, options *GetApiMetricsOptions) (*ApiMetrics, error)
-	Ping(ctx context.Context, clientId string, room string) error
+	Ping(ctx context.Context, clientId string) error
 	AckMessage(ctx context.Context, clientId string, ackToken *string) error
 	Subscribe(ctx context.Context, clientId string, room string) error
 	Unsubscribe(ctx context.Context, clientId string, room string) error
@@ -513,8 +513,29 @@ func (c *redisQueueApiClient) GetMetrics(ctx context.Context, options *GetApiMet
 	return result, nil
 }
 
-func (c *redisQueueApiClient) Ping(ctx context.Context, clientId string, room string) error {
-	return c._pong(ctx, clientId, room)
+func (c *redisQueueApiClient) Ping(ctx context.Context, clientId string) error {
+	if list, _, err := c.redis.ZScan(ctx, c.keyGlobalSetOfKnownClients, 0, fmt.Sprintf("%s::*", clientId), 1000000).Result(); err != nil {
+		return err
+	} else {
+		for index, clientRoomId := range list {
+			if index%2 == 0 {
+				parts := strings.SplitN(clientRoomId, "::", 2)
+
+				if len(parts) < 2 {
+					panic(fmt.Sprintf("Invalid data in Redis: [%v] [%v]", index, clientRoomId))
+				}
+
+				clientId := parts[0]
+				room := parts[1]
+
+				if err = c._pong(ctx, clientId, room); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func (c *redisQueueApiClient) AckMessage(ctx context.Context, clientId string, ackToken *string) error {
