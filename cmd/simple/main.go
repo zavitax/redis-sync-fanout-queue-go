@@ -50,9 +50,12 @@ func createWorkerClient(options *redisSyncFanoutQueue.WorkerOptions) (redisSyncF
 
 func pub() {
 	doneC := make(chan os.Signal, 1)
-	signal.Notify(doneC)
+	signal.Notify(doneC, os.Interrupt)
 
-	client, _ := createApiClient(createApiOptions())
+	client, err := createApiClient(createApiOptions())
+	if err != nil {
+		panic(err)
+	}
 
 	i := 0
 	ticker := time.NewTicker(time.Second)
@@ -64,9 +67,13 @@ func pub() {
 		case <-ticker.C:
 			i++
 
-			client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1)
+			if err := client.Send(context.TODO(), "test", testRoomId, testMessageContent, 1); err != nil {
+				fmt.Printf("error: %w\n", err)
+				done = true
+				continue
+			}
 
-			fmt.Printf("Send: %v\r", i)
+			fmt.Printf("Send: %v\n", i)
 		}
 	}
 	ticker.Stop()
@@ -76,9 +83,12 @@ func pub() {
 
 func sub(clientsCount int) {
 	doneC := make(chan os.Signal, 1)
-	signal.Notify(doneC)
+	signal.Notify(doneC, os.Interrupt)
 
-	client, _ := createApiClient(createApiOptions())
+	client, err := createApiClient(createApiOptions())
+	if err != nil {
+		panic(err)
+	}
 
 	clientIds := []string{}
 	for i := 0; i < clientsCount; i++ {
@@ -116,10 +126,13 @@ func sub(clientsCount int) {
 
 func worker() {
 	doneC := make(chan os.Signal, 1)
-	signal.Notify(doneC)
+	signal.Notify(doneC, os.Interrupt)
 
 	// Used for ACKs
-	client, _ := createApiClient(createApiOptions())
+	client, err := createApiClient(createApiOptions())
+	if err != nil {
+		panic(err)
+	}
 
 	wo := createWorkerOptions()
 	wo.HandleRoomClientTimeout = func(ctx context.Context, clientId *string, roomId *string) error {
@@ -170,9 +183,12 @@ func worker() {
 
 func peek() {
 	doneC := make(chan os.Signal, 1)
-	signal.Notify(doneC)
+	signal.Notify(doneC, os.Interrupt)
 
-	client, _ := createApiClient(createApiOptions())
+	client, err := createApiClient(createApiOptions())
+	if err != nil {
+		panic(err)
+	}
 
 	ticker := time.NewTicker(time.Second)
 	done := false
@@ -186,7 +202,6 @@ func peek() {
 			} else {
 				for index, msg := range msgs {
 					strData := (*msg.Data).(string)
-
 					fmt.Printf("Peek: %d: %v\n", index, strData)
 				}
 			}
@@ -201,7 +216,7 @@ func main() {
 	args := os.Args[1:]
 	mode := "default"
 
-	fmt.Printf("Args: %v", args)
+	fmt.Printf("Args: %v\n", args)
 
 	if len(args) > 0 {
 		mode = args[0]
