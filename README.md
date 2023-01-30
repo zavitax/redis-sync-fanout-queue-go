@@ -31,7 +31,7 @@ Most of the heavy lifting is done in Redis.
 
 ## Infrastructure
 
-The library leverages `ioredis` for communication with the Redis server.
+The library leverages `go-redis` for communication with the Redis server.
 
 ## Usage
 
