@@ -40,6 +40,7 @@ type RedisQueueApiClient interface {
 	AckMessage(ctx context.Context, clientId string, ackToken *string) error
 	Subscribe(ctx context.Context, clientId string, room string) error
 	Unsubscribe(ctx context.Context, clientId string, room string) error
+	GetRoomState(ctx context.Context, room string) (*RoomState, error)
 }
 
 type redisQueueApiClient struct {
@@ -61,6 +62,7 @@ type redisQueueApiClient struct {
 	callConditionalProcessRoomMessages *redisLuaScriptUtils.CompiledRedisScript
 	callSubscribe                      *redisLuaScriptUtils.CompiledRedisScript
 	callUnsubscribe                    *redisLuaScriptUtils.CompiledRedisScript
+	callGetRoomState                   *redisLuaScriptUtils.CompiledRedisScript
 
 	keyGlobalSetOfKnownClients string
 	keyGlobalKnownRooms        string
@@ -222,6 +224,16 @@ func NewApiClient(ctx context.Context, options *ApiOptions) (RedisQueueApiClient
 		return nil, err
 	}
 
+	if c.callGetRoomState, err = redisLuaScriptUtils.CompileRedisScripts(
+		[]*redisLuaScriptUtils.RedisScript{
+			scriptGetRoomState,
+		},
+		c.redisKeys,
+	); err != nil {
+		c.redis.Close()
+		return nil, err
+	}
+
 	c.housekeep_context, c.housekeep_cancelFunc = context.WithCancel(ctx)
 	go (func() {
 		housekeepingInterval := time.Duration(c.options.ClientTimeout / 2)
@@ -369,7 +381,6 @@ func (c *redisQueueApiClient) _ack(ctx context.Context, clientId string, ackToke
 
 	args := c.createStdRoomArgs(clientId, room)
 
-	fmt.Println("callAckClientMessage args: ", args)
 	return c.callAckClientMessage.Run(ctx, c.redis, args).Err()
 }
 
@@ -554,4 +565,48 @@ func (c *redisQueueApiClient) createClientId(ctx context.Context) (string, error
 
 func (c *redisQueueApiClient) CreateClientID(ctx context.Context) (string, error) {
 	return c.createClientId(ctx)
+}
+
+func (c *redisQueueApiClient) GetRoomState(ctx context.Context, room string) (*RoomState, error) {
+	args := make(redisLuaScriptUtils.RedisScriptArguments, 0)
+	args["argRoomID"] = room
+	if resultSet, err := c.callGetRoomState.Run(ctx, c.redis, &args).Slice(); err != nil {
+		return nil, err
+	} else {
+		result := resultSet[0].([]interface{})
+
+		r := &RoomState{
+			Room:                         result[0].(string),
+			PendingMessagesBacklogLength: result[1].(int64),
+			KnownClients:                 make(map[string]time.Time, 0),
+			AcknowledgedClients:          make(map[string]time.Time),
+		}
+
+		knownArr := result[2].([]interface{})
+		ackedArr := result[3].([]interface{})
+
+		for i := 0; i < len(knownArr); i += 2 {
+			clientId := knownArr[i].(string)
+			timestampStr := knownArr[i+1].(string)
+
+			if parsedTimestamp, err := strconv.ParseInt(timestampStr, 10, 0); err == nil {
+				r.KnownClients[clientId] = time.Unix(parsedTimestamp, 0)
+			} else {
+				return nil, err
+			}
+		}
+
+		for i := 0; i < len(ackedArr); i += 2 {
+			clientId := ackedArr[i].(string)
+			timestampStr := ackedArr[i+1].(string)
+
+			if parsedTimestamp, err := strconv.ParseInt(timestampStr, 10, 0); err == nil {
+				r.AcknowledgedClients[clientId] = time.Unix(parsedTimestamp, 0)
+			} else {
+				return nil, err
+			}
+		}
+
+		return r, nil
+	}
 }

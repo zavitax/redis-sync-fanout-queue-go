@@ -58,7 +58,7 @@ func pub() {
 	}
 
 	i := 0
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(time.Millisecond * 50)
 	done := false
 	for !done {
 		select {
@@ -113,6 +113,10 @@ func sub(clientsCount int) {
 			})
 
 			fmt.Printf("Metrics: %v\n", metrics)
+
+			roomState, _ := client.GetRoomState(context.TODO(), testRoomId)
+
+			fmt.Printf("RoomState: %v\n", roomState)
 		}
 	}
 	ticker.Stop()

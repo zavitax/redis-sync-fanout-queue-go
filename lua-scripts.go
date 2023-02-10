@@ -17,6 +17,7 @@ var (
 	scriptEnqueueRoomMessage             *redisLuaScriptUtils.RedisScript
 	scriptAckClientMessage               *redisLuaScriptUtils.RedisScript
 	scriptGetMetrics                     *redisLuaScriptUtils.RedisScript
+	scriptGetRoomState                   *redisLuaScriptUtils.RedisScript
 )
 
 //go:embed "internal/lua_scripts"
@@ -33,6 +34,7 @@ func init() {
 		"enqueue_room_message.lua",
 		"ack_client_message.lua",
 		"get_metrics.lua",
+		"get_room_state.lua",
 	}
 	luaFileMap := make(map[string]string, len(luaFiles))
 
@@ -96,5 +98,11 @@ func init() {
 		[]string{"keyGlobalKnownRooms", "keyGlobalSetOfKnownClients"},
 		[]string{"argTopRoomsLimit"},
 		luaFileMap["get_metrics.lua"],
+	)
+
+	scriptGetRoomState = redisLuaScriptUtils.NewRedisScript(
+		[]string{"keyRoomQueue", "keyRoomSetOfKnownClients", "keyRoomSetOfAckedClients"},
+		[]string{"argRoomID"},
+		luaFileMap["get_room_state.lua"],
 	)
 }
